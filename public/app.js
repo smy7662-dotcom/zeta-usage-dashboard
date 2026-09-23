@@ -268,10 +268,12 @@ function drawChart() {
   if (homepageMode) {
     const history = state.data.homepageHistory || [];
     const coverages = history.map((point) => point.observedPlots).filter(Number.isFinite);
-    $("history-source").textContent = "Wayback 홈 공개 표본";
-    $("history-points").textContent = `복원 ${number.format(history.length)}일 / 색인 71캡처`;
+    $("history-source").textContent = "Wayback 홈 표본 · 색인 71캡처";
+    $("history-points").textContent = points.length
+      ? `${state.metric === "homepageMatchedIndex" ? "지수" : "원값"} ${number.format(points.length)}점 · ${points[0].date}→${points[points.length - 1].date}`
+      : "관측점 없음";
     $("history-coverage").textContent = coverages.length
-      ? `캡처당 ${number.format(Math.min(...coverages))}~${number.format(Math.max(...coverages))}개 플롯`
+      ? `원값 ${number.format(history.length)}일 · 캡처당 ${number.format(Math.min(...coverages))}~${number.format(Math.max(...coverages))}개 플롯`
       : "캡처당 플롯 —";
     $("history-source-link").hidden = false;
   } else if (restoredMode) {
