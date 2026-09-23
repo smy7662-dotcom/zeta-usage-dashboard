@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-09-23T04:16:27Z",
+  "updatedAt": "2026-09-23T04:29:10Z",
   "latestDate": "2026-09-23",
   "coverage": {
     "knownPlots": 1574,
@@ -812,6 +812,215 @@
       "matchedPlots": null,
       "comparisonDate": null,
       "sourceUrl": "https://web.archive.org/web/20260824075330id_/https://zeta-ai.io/ko"
+    }
+  ],
+  "matchedGrowthHistory": [
+    {
+      "date": "2024-05-22",
+      "observedPlots": 117,
+      "matchedGrowthIndex": 100.0,
+      "matchedPlots": null,
+      "comparisonDate": null,
+      "sourceUrl": "https://web.archive.org/web/20240522165134id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2024-05-25",
+      "observedPlots": 110,
+      "matchedGrowthIndex": 105.2,
+      "matchedPlots": 98,
+      "comparisonDate": "2024-05-22",
+      "sourceUrl": "https://web.archive.org/web/20240525095433id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2024-07-01",
+      "observedPlots": 96,
+      "matchedGrowthIndex": 274.3,
+      "matchedPlots": 52,
+      "comparisonDate": "2024-05-25",
+      "sourceUrl": "https://web.archive.org/web/20240701053128id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2024-07-09",
+      "observedPlots": 104,
+      "matchedGrowthIndex": 304.6,
+      "matchedPlots": 75,
+      "comparisonDate": "2024-07-01",
+      "sourceUrl": "https://web.archive.org/web/20240709131257id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2024-07-28",
+      "observedPlots": 101,
+      "matchedGrowthIndex": 375.3,
+      "matchedPlots": 74,
+      "comparisonDate": "2024-07-09",
+      "sourceUrl": "https://web.archive.org/web/20240728195505id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2024-11-30",
+      "observedPlots": 37,
+      "matchedGrowthIndex": 1011.7,
+      "matchedPlots": 31,
+      "comparisonDate": "2024-07-28",
+      "sourceUrl": "https://web.archive.org/web/20241130141101id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2024-12-09",
+      "observedPlots": 37,
+      "matchedGrowthIndex": 1046.4,
+      "matchedPlots": 33,
+      "comparisonDate": "2024-11-30",
+      "sourceUrl": "https://web.archive.org/web/20241209173701id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-02-07",
+      "observedPlots": 42,
+      "matchedGrowthIndex": 1257.0,
+      "matchedPlots": 25,
+      "comparisonDate": "2024-12-09",
+      "sourceUrl": "https://web.archive.org/web/20250207074922id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-02-11",
+      "observedPlots": 39,
+      "matchedGrowthIndex": 1277.4,
+      "matchedPlots": 36,
+      "comparisonDate": "2025-02-07",
+      "sourceUrl": "https://web.archive.org/web/20250211195018id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-03-02",
+      "observedPlots": 42,
+      "matchedGrowthIndex": 1352.3,
+      "matchedPlots": 35,
+      "comparisonDate": "2025-02-11",
+      "sourceUrl": "https://web.archive.org/web/20250302203444id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-03-19",
+      "observedPlots": 42,
+      "matchedGrowthIndex": 1395.1,
+      "matchedPlots": 36,
+      "comparisonDate": "2025-03-02",
+      "sourceUrl": "https://web.archive.org/web/20250319180511id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-04-01",
+      "observedPlots": 42,
+      "matchedGrowthIndex": 1429.7,
+      "matchedPlots": 37,
+      "comparisonDate": "2025-03-19",
+      "sourceUrl": "https://web.archive.org/web/20250401005449id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-04-05",
+      "observedPlots": 42,
+      "matchedGrowthIndex": 1440.5,
+      "matchedPlots": 38,
+      "comparisonDate": "2025-04-01",
+      "sourceUrl": "https://web.archive.org/web/20250405214520id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-05-28",
+      "observedPlots": 64,
+      "matchedGrowthIndex": 1523.8,
+      "matchedPlots": 22,
+      "comparisonDate": "2025-04-05",
+      "sourceUrl": "https://web.archive.org/web/20250528135701id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-05-29",
+      "observedPlots": 65,
+      "matchedGrowthIndex": 1524.9,
+      "matchedPlots": 40,
+      "comparisonDate": "2025-05-28",
+      "sourceUrl": "https://web.archive.org/web/20250529123048id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-06-02",
+      "observedPlots": 65,
+      "matchedGrowthIndex": 1533.3,
+      "matchedPlots": 42,
+      "comparisonDate": "2025-05-29",
+      "sourceUrl": "https://web.archive.org/web/20250602212336id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-09-19",
+      "observedPlots": 61,
+      "matchedGrowthIndex": 1684.3,
+      "matchedPlots": 37,
+      "comparisonDate": "2025-06-02",
+      "sourceUrl": "https://web.archive.org/web/20250919160831id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-09-22",
+      "observedPlots": 61,
+      "matchedGrowthIndex": 1684.3,
+      "matchedPlots": 61,
+      "comparisonDate": "2025-09-19",
+      "sourceUrl": "https://web.archive.org/web/20250922221200id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2025-09-23",
+      "observedPlots": 61,
+      "matchedGrowthIndex": 1684.3,
+      "matchedPlots": 61,
+      "comparisonDate": "2025-09-22",
+      "sourceUrl": "https://web.archive.org/web/20250923172012id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2026-01-22",
+      "observedPlots": 64,
+      "matchedGrowthIndex": 1735.9,
+      "matchedPlots": 36,
+      "comparisonDate": "2025-09-23",
+      "sourceUrl": "https://web.archive.org/web/20260122051014id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2026-05-10",
+      "observedPlots": 64,
+      "matchedGrowthIndex": 1751.8,
+      "matchedPlots": 38,
+      "comparisonDate": "2026-01-22",
+      "sourceUrl": "https://web.archive.org/web/20260510212256id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2026-06-18",
+      "observedPlots": 64,
+      "matchedGrowthIndex": 1756.4,
+      "matchedPlots": 40,
+      "comparisonDate": "2026-05-10",
+      "sourceUrl": "https://web.archive.org/web/20260618084759id_/https://zeta-ai.io/ko",
+      "isCurrent": false
+    },
+    {
+      "date": "2026-09-23",
+      "observedPlots": 909,
+      "matchedGrowthIndex": 5373.5,
+      "matchedPlots": 10,
+      "comparisonDate": "2026-06-18",
+      "sourceUrl": "https://api.zeta-ai.io/v1/plots/ranking?type=GLOBAL&limit=100&gender=ALL",
+      "isCurrent": true
     }
   ],
   "plots": [

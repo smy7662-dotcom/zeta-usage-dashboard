@@ -295,7 +295,9 @@ function drawChart() {
   const sourceSeries = restoredMode
     ? (restoredPlot?.series || [])
     : homepageMode
-      ? (state.data.homepageHistory || [])
+      ? state.metric === "homepageMatchedIndex"
+        ? (state.data.matchedGrowthHistory || state.data.homepageHistory || [])
+        : (state.data.homepageHistory || [])
       : state.data.platformHistory;
   const points = filtered(sourceSeries).filter((point) => point[metric] != null);
   $("chart-title").textContent = restoredMode
@@ -317,16 +319,24 @@ function drawChart() {
   if (homepageMode) {
     const history = state.data.homepageHistory || [];
     const coverages = history.map((point) => point.observedPlots).filter(Number.isFinite);
-    $("history-source").textContent = "Wayback 홈 표본 · 색인 71캡처";
+    $("history-source").textContent = state.metric === "homepageMatchedIndex"
+      ? "Wayback 홈 표본 + 현재 API"
+      : "Wayback 홈 표본 · 색인 71캡처";
     $("history-points").textContent = points.length
       ? `${state.metric === "homepageMatchedIndex" ? "지수" : "원값"} ${number.format(points.length)}점 · ${points[0].date}→${points[points.length - 1].date}`
       : "관측점 없음";
-    $("history-coverage").textContent = coverages.length
+    const latestPoint = points[points.length - 1];
+    $("history-coverage").textContent = state.metric === "homepageMatchedIndex" && latestPoint?.isCurrent
+      ? `최신 연결 동일 플롯 ${number.format(latestPoint.matchedPlots)}개 · 홈 원값 ${number.format(history.length)}일`
+      : coverages.length
       ? `원값 ${number.format(history.length)}일 · 캡처당 ${number.format(Math.min(...coverages))}~${number.format(Math.max(...coverages))}개 플롯`
       : "캡처당 플롯 —";
     $("history-source-link").hidden = false;
-    $("history-source-link").href = "https://web.archive.org/web/20240522165134id_/https://zeta-ai.io/ko";
-    $("history-source-link").textContent = "원문 캡처 ↗";
+    const latestSource = points[points.length - 1]?.sourceUrl;
+    $("history-source-link").href = latestSource || "https://web.archive.org/web/20240522165134id_/https://zeta-ai.io/ko";
+    $("history-source-link").textContent = state.metric === "homepageMatchedIndex" && points[points.length - 1]?.isCurrent
+      ? "현재 API ↗"
+      : "원문 캡처 ↗";
   } else if (restoredMode) {
     $("history-source").textContent = "플롯별 원값 · Wayback+현재 API";
     $("history-points").textContent = points.length

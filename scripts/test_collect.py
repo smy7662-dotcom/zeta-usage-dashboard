@@ -118,6 +118,26 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(history[1]["matchedGrowthIndex"], 200.0)
         self.assertEqual(history[1]["matchedPlots"], 10)
 
+        for index in range(10):
+            plot_id = f"plot-{index}"
+            self.db.execute(
+                """
+                INSERT INTO plot_observations (
+                  plot_id, observed_date, observed_at, source,
+                  interaction_count, source_url
+                ) VALUES (?, '2026-09-23', '2026-09-23T00:00:00Z',
+                          'detail', ?, 'https://api.example.test/current')
+                """,
+                (plot_id, (index + 1) * 40),
+            )
+        self.db.commit()
+        payload = build_dashboard(self.db, self.root / "out-current", [])
+        current = payload["matchedGrowthHistory"][-1]
+        self.assertEqual(current["date"], "2026-09-23")
+        self.assertEqual(current["matchedGrowthIndex"], 400.0)
+        self.assertEqual(current["matchedPlots"], 10)
+        self.assertTrue(current["isCurrent"])
+
     def test_wayback_api_url_filter_excludes_subresources(self):
         detail = "https://api.zeta-ai.io/v1/plots/004c611d-3ca2-46d3-b443-786552edfe94"
         self.assertIsNotNone(DETAIL_API.match(detail))

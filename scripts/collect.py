@@ -691,6 +691,95 @@ def build_homepage_history(db: sqlite3.Connection) -> list[dict[str, Any]]:
     return history
 
 
+def build_matched_growth_history(
+    db: sqlite3.Connection, homepage_history: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Wayback 홈 동일 플롯 지수에 최신 공개 API 관측점을 연결함."""
+    history = [
+        {
+            "date": point["date"],
+            "observedPlots": point["observedPlots"],
+            "matchedGrowthIndex": point["matchedGrowthIndex"],
+            "matchedPlots": point["matchedPlots"],
+            "comparisonDate": point["comparisonDate"],
+            "sourceUrl": point["sourceUrl"],
+            "isCurrent": False,
+        }
+        for point in homepage_history
+        if point["matchedGrowthIndex"] is not None
+    ]
+    if not history:
+        return history
+
+    latest_row = db.execute(
+        """
+        SELECT MAX(observed_date)
+        FROM plot_observations
+        WHERE source NOT LIKE 'wayback%' AND interaction_count IS NOT NULL
+        """
+    ).fetchone()
+    latest_date = latest_row[0] if latest_row else None
+    if not latest_date or latest_date <= history[-1]["date"]:
+        return history
+
+    current_rows: dict[str, sqlite3.Row] = {}
+    for row in db.execute(
+        """
+        SELECT * FROM plot_observations
+        WHERE observed_date=? AND source NOT LIKE 'wayback%'
+          AND interaction_count IS NOT NULL
+        ORDER BY observed_at
+        """,
+        (latest_date,),
+    ).fetchall():
+        current_rows[row["plot_id"]] = prefer_observation(
+            current_rows.get(row["plot_id"]), row
+        )
+    current = {
+        plot_id: row["interaction_count"] for plot_id, row in current_rows.items()
+    }
+
+    for previous in reversed(history):
+        prior_rows = db.execute(
+            """
+            SELECT plot_id, interaction_count
+            FROM plot_observations
+            WHERE observed_date=? AND source='wayback-home'
+              AND interaction_count IS NOT NULL
+            """,
+            (previous["date"],),
+        ).fetchall()
+        prior = {row["plot_id"]: row["interaction_count"] for row in prior_rows}
+        overlap = [
+            plot_id
+            for plot_id in current.keys() & prior.keys()
+            if prior[plot_id] > 0
+        ]
+        if len(overlap) < 10:
+            continue
+        ratio = statistics.median(
+            current[plot_id] / prior[plot_id] for plot_id in overlap
+        )
+        history.append(
+            {
+                "date": latest_date,
+                "observedPlots": len(current),
+                "matchedGrowthIndex": round(
+                    previous["matchedGrowthIndex"] * ratio, 1
+                ),
+                "matchedPlots": len(overlap),
+                "comparisonDate": previous["date"],
+                "sourceUrl": (
+                    "https://api.zeta-ai.io/v1/plots/ranking"
+                    "?type=GLOBAL&limit=100&gender=ALL"
+                ),
+                "isCurrent": True,
+            }
+        )
+        break
+    return history
+
+
 def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) -> dict[str, Any]:
     known_plots = db.execute("SELECT COUNT(*) FROM plots").fetchone()[0]
     known_tags = db.execute("SELECT COUNT(*) FROM tag_queue").fetchone()[0]
@@ -841,6 +930,7 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
         for row in current_latest.values()
         if row["latest_comment_count"] is not None
     ]
+    homepage_history = build_homepage_history(db)
     payload = {
         "schemaVersion": 1,
         "updatedAt": iso_z(utc_now()),
@@ -862,7 +952,8 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             ).fetchone()[0],
         },
         "platformHistory": platform_history,
-        "homepageHistory": build_homepage_history(db),
+        "homepageHistory": homepage_history,
+        "matchedGrowthHistory": build_matched_growth_history(db, homepage_history),
         "plots": plot_payloads,
         "tags": tag_stats,
         "errors": errors[-50:],
