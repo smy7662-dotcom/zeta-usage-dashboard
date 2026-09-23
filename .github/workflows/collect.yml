@@ -7,7 +7,7 @@ on:
     - cron: "10 15 * * *"
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -75,3 +75,14 @@ jobs:
           name: zeta-public-data-${{ github.run_number }}
           path: public/data
           retention-days: 90
+
+      - name: Keep scheduled workflow active
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(TZ=Asia/Seoul date +%d)" != "01" ]; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keep daily collector active [skip ci]"
+          git push origin HEAD:main
