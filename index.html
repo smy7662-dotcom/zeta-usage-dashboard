@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="제타 공개 플롯·태그·댓글 관심도 관측소">
+  <title>제타 관심도 관측소</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="public/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">ZETA PUBLIC SIGNALS</p>
+        <h1>제타 관심도 관측소</h1>
+        <p class="lede">공개 플롯의 정확한 누적값을 매일 같은 시각에 읽어, 관심이 커지는 방향과 그 원인을 태그·플롯까지 내려가 확인함.</p>
+      </div>
+      <div class="hero-meta">
+        <div class="live-dot"><span></span> 공개 데이터</div>
+        <p id="updated-at">데이터 불러오는 중</p>
+        <p id="coverage-line"></p>
+      </div>
+    </header>
+
+    <section class="control-bar" aria-label="조회 조건">
+      <div class="control-group">
+        <span class="control-label">기간</span>
+        <div class="segmented" id="period-buttons">
+          <button data-days="7">7일</button>
+          <button class="active" data-days="30">30일</button>
+          <button data-days="60">60일</button>
+          <button data-days="custom">직접 설정</button>
+        </div>
+      </div>
+      <div class="custom-dates" id="custom-dates" hidden>
+        <label>시작 <input type="date" id="start-date"></label>
+        <span>→</span>
+        <label>종료 <input type="date" id="end-date"></label>
+      </div>
+      <div class="control-group metric-control">
+        <span class="control-label">차트</span>
+        <select id="metric-select">
+          <option value="averageChatsPerPlot">플롯당 누적 대화</option>
+          <option value="totalChats">관측 플롯 총대화</option>
+          <option value="totalChatsWithRegen">재생성 포함 총대화</option>
+          <option value="totalComments">댓글 합계</option>
+          <option value="observedPlots">관측 플롯 수</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="kpi-grid" aria-label="핵심 지표">
+      <article class="kpi-card accent-blue">
+        <p>동일 플롯 신규 대화</p>
+        <strong id="kpi-total">—</strong>
+        <small id="kpi-total-note">두 시점 모두 관측된 플롯</small>
+      </article>
+      <article class="kpi-card accent-violet">
+        <p>플롯당 신규 대화</p>
+        <strong id="kpi-average">—</strong>
+        <small id="kpi-average-note">평균 · 중앙값 —</small>
+      </article>
+      <article class="kpi-card accent-coral">
+        <p>활성 플롯</p>
+        <strong id="kpi-active">—</strong>
+        <small id="kpi-active-note">대화량이 증가한 플롯</small>
+      </article>
+      <article class="kpi-card accent-green">
+        <p>현재 확보 플롯</p>
+        <strong id="kpi-plots">—</strong>
+        <small id="kpi-plots-note">전수조사 진행 중</small>
+      </article>
+    </section>
+
+    <section class="panel chart-panel">
+      <div class="panel-head">
+        <div>
+          <p class="section-kicker">관심도</p>
+          <h2 id="chart-title">플롯당 누적 대화</h2>
+          <p class="annotation">표식 = 값이 확인된 날 · 선은 관측값 연결 · 빈 날짜는 보간하지 않음</p>
+        </div>
+        <div class="chart-summary" id="chart-summary">—</div>
+      </div>
+      <div class="chart-wrap" id="chart-wrap">
+        <canvas id="history-chart" aria-label="제타 관심도 시계열"></canvas>
+        <div class="tooltip" id="chart-tooltip" hidden></div>
+        <div class="empty-state" id="chart-empty" hidden>선택 기간에 비교 가능한 관측점이 아직 없음.</div>
+      </div>
+    </section>
+
+    <section class="rank-grid">
+      <article class="panel table-panel">
+        <div class="panel-head compact">
+          <div>
+            <p class="section-kicker">DISCOVERY</p>
+            <h2>급상승 태그</h2>
+          </div>
+          <p class="annotation">선택 기간 대화 증가량</p>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>#</th><th>태그</th><th>증가</th><th>비교</th></tr></thead>
+            <tbody id="tag-table"></tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="panel table-panel">
+        <div class="panel-head compact">
+          <div>
+            <p class="section-kicker">MOMENTUM</p>
+            <h2>급상승 플롯</h2>
+          </div>
+          <p class="annotation">행을 눌러 상세 확인</p>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>#</th><th>플롯</th><th>증가</th><th>현재</th></tr></thead>
+            <tbody id="plot-table"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel detail-panel" id="plot-detail" hidden>
+      <div class="panel-head">
+        <div>
+          <p class="section-kicker">PLOT DETAIL</p>
+          <h2 id="detail-name">—</h2>
+          <p class="annotation" id="detail-meta"></p>
+        </div>
+        <a id="detail-link" class="source-link" target="_blank" rel="noreferrer">제타에서 보기 ↗</a>
+      </div>
+      <div class="detail-stats" id="detail-stats"></div>
+      <div class="tag-cloud" id="detail-tags"></div>
+    </section>
+
+    <section class="panel methodology">
+      <div>
+        <p class="section-kicker">COVERAGE</p>
+        <h2>수집 범위와 해석</h2>
+      </div>
+      <div class="method-grid">
+        <div><strong id="method-plots">—</strong><span>발견 고유 플롯</span></div>
+        <div><strong id="method-tags">—</strong><span>발견 태그</span></div>
+        <div><strong id="method-comments">—</strong><span>댓글 확보 플롯</span></div>
+        <div><strong id="method-queue">—</strong><span>남은 태그 큐</span></div>
+      </div>
+      <p class="caveat" id="method-note">초기 전수조사 중에는 발견 범위가 늘며 총량도 함께 커질 수 있음. 관심도 방향은 두 시점 모두 값이 있는 동일 플롯의 증분을 우선 봄.</p>
+      <div class="source-row">
+        <a href="https://api.zeta-ai.io/v1/plots/ranking?type=GLOBAL&amp;limit=100&amp;gender=ALL" target="_blank" rel="noreferrer">제타 랭킹 API</a>
+        <a href="https://api.zeta-ai.io/v1/discovery-tab" target="_blank" rel="noreferrer">디스커버리 API</a>
+        <a href="https://web.archive.org" target="_blank" rel="noreferrer">Wayback Machine</a>
+      </div>
+      <details id="error-box" hidden><summary>수집 오류</summary><ul id="error-list"></ul></details>
+    </section>
+
+    <footer>비공식 공개 데이터 관측 도구 · 값이 확인되지 않은 날은 만들지 않음</footer>
+  </main>
+  <script src="public/app.js" defer></script>
+</body>
+</html>

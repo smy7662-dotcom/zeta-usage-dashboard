@@ -1,0 +1,12 @@
+{
+  "updatedAt": "2026-09-23T02:18:52Z",
+  "coverage": {
+    "knownPlots": 895,
+    "knownTags": 1869,
+    "completedTags": 0,
+    "pendingTags": 1869,
+    "plotsWithCurrentValues": 888,
+    "plotsWithComments": 34
+  },
+  "errors": []
+}

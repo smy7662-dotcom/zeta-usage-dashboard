@@ -1,0 +1,75 @@
+name: collect-and-publish
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 매일 00:10 KST
+    - cron: "10 15 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: zeta-daily
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore collector state
+        uses: actions/cache/restore@v4
+        with:
+          path: data/zeta.sqlite3
+          key: zeta-db-${{ github.run_id }}
+          restore-keys: |
+            zeta-db-
+
+      - name: Collect public Zeta metrics
+        run: python scripts/collect.py --max-tag-pages 120 --max-plot-refresh 1500 --max-comment-plots 250 --infinite-pages 8
+
+      - name: Backfill a small Wayback batch
+        continue-on-error: true
+        run: python scripts/backfill_wayback.py --limit 1 --delay 0.25
+
+      - name: Verify output
+        run: python -m unittest scripts/test_collect.py
+
+      - name: Save collector state
+        uses: actions/cache/save@v4
+        with:
+          path: data/zeta.sqlite3
+          key: zeta-db-${{ github.run_id }}
+
+      - name: Assemble site
+        run: |
+          mkdir site
+          cp index.html site/index.html
+          cp -R public site/public
+          touch site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Preserve public snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeta-public-data-${{ github.run_number }}
+          path: public/data
+          retention-days: 90
