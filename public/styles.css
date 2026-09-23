@@ -48,6 +48,9 @@ h1 { margin: 0; font: 700 clamp(36px, 5vw, 62px)/1.05 "Gowun Dodum", sans-serif;
 .segmented button.active { background: var(--ink); color: white; }
 .metric-control { margin-left: auto; }
 select, input[type=date] { border: 1px solid var(--line); border-radius: 10px; background: white; color: var(--ink); padding: 8px 10px; }
+.plot-picker { display:flex; gap:8px; }
+.plot-picker input { width:210px; border:1px solid var(--line); border-radius:10px; background:white; color:var(--ink); padding:8px 10px; }
+.plot-picker select { max-width:270px; }
 .custom-dates { display:flex; gap:8px; align-items:center; font-size:12px; color:var(--muted); }
 .custom-dates label { display:flex; align-items:center; gap:6px; }
 .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 18px 0; }
@@ -92,6 +95,8 @@ tbody tr:hover { background:rgba(236,241,235,.65); }
 .negative { color:#bf4c3f; font-weight:600; }
 .detail-panel { margin-bottom:18px; }
 .source-link { padding:10px 13px; color:var(--blue); border:1px solid #cad7f8; border-radius:12px; text-decoration:none; font-size:13px; }
+.detail-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.detail-actions button { background:white; cursor:pointer; }
 .detail-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:22px; }
 .detail-stats div { padding:14px; border-radius:14px; background:#f1f4ef; }
 .detail-stats span { display:block; color:var(--muted); font-size:11px; }
@@ -113,6 +118,8 @@ footer { padding:26px 4px 0; color:#89938e; font-size:11px; text-align:center; }
   .kpi-grid { grid-template-columns:1fr 1fr; }
   .rank-grid { grid-template-columns:1fr; }
   .metric-control { margin-left:0; }
+  .plot-picker { width:100%; }
+  .plot-picker input, .plot-picker select { min-width:0; flex:1; }
   .detail-stats, .method-grid { grid-template-columns:1fr 1fr; }
 }
 @media (max-width: 540px) {

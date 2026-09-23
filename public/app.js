@@ -5,6 +5,9 @@ const state = {
   customEnd: null,
   metric: "homepageMatchedIndex",
   restoredPlotId: null,
+  plotQuery: "",
+  chartablePlots: [],
+  detailPlotId: null,
   chartPoints: [],
 };
 
@@ -14,7 +17,7 @@ const metricLabels = {
   homepageMedianChats: "홈 노출 플롯 중앙값",
   homepageTotalChats: "홈 노출 플롯 총대화",
   homepageTop10Chats: "홈 노출 상위 10개 총대화",
-  restoredPlotChats: "Wayback 복원 플롯",
+  restoredPlotChats: "플롯별 실제 누적 대화",
   averageChatsPerPlot: "플롯당 누적 대화",
   totalChats: "관측 플롯 총대화",
   totalChatsWithRegen: "재생성 포함 총대화",
@@ -176,6 +179,7 @@ function showPlot(plotId) {
   if (!plot) return;
   const comparison = pair(plot.series, "chats");
   $("plot-detail").hidden = false;
+  state.detailPlotId = plotId;
   $("detail-name").textContent = plot.name;
   $("detail-meta").textContent = `${plot.creator || "제작자 미확인"} · 관측 ${plot.series.length}회`;
   $("detail-link").href = `https://zeta-ai.io/ko/plots/${encodeURIComponent(plot.id)}/profile`;
@@ -189,6 +193,51 @@ function showPlot(plotId) {
   $("plot-detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+function sourceLabel(source) {
+  if (source === "wayback-home") return "Wayback 홈 캡처";
+  if (source === "wayback-api") return "Wayback API JSON";
+  if (source === "wayback") return "Wayback 프로필";
+  if (source?.startsWith("ranking:")) return "현재 랭킹 API";
+  if (source === "detail" || source === "live") return "현재 상세 API";
+  return source || "공개 원값";
+}
+
+function renderPlotOptions(query = "") {
+  state.plotQuery = query.trim().toLocaleLowerCase("ko-KR");
+  const matches = state.chartablePlots.filter((plot) => {
+    if (!state.plotQuery) return true;
+    return [plot.name, plot.creator, ...(plot.tags || [])]
+      .filter(Boolean)
+      .some((value) => String(value).toLocaleLowerCase("ko-KR").includes(state.plotQuery));
+  });
+  const visible = matches.slice(0, 300);
+  if (!visible.length) {
+    state.restoredPlotId = null;
+    $("history-plot-select").innerHTML = '<option value="">검색 결과 없음</option>';
+    return;
+  }
+  if (!visible.some((plot) => plot.id === state.restoredPlotId)) {
+    state.restoredPlotId = visible[0].id;
+  }
+  $("history-plot-select").innerHTML = visible.map((plot) => {
+    const points = (plot.series || []).filter((point) => point.chats != null).length;
+    return `<option value="${escapeHtml(plot.id)}"${plot.id === state.restoredPlotId ? " selected" : ""}>${escapeHtml(plot.name)} · ${number.format(points)}점 · ${compact(plot.chats)}</option>`;
+  }).join("");
+}
+
+function showPlotChart(plotId) {
+  const plot = state.data.plots.find((item) => item.id === plotId);
+  if (!plot) return;
+  state.metric = "restoredPlotChats";
+  state.restoredPlotId = plotId;
+  $("metric-select").value = state.metric;
+  $("plot-picker").hidden = false;
+  $("plot-search").value = plot.name;
+  renderPlotOptions(plot.name);
+  drawChart();
+  document.querySelector(".chart-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function renderMeta() {
   const updated = new Date(state.data.updatedAt);
   $("updated-at").textContent = `마지막 갱신 ${updated.toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "medium", timeStyle: "short" })}`;
@@ -197,11 +246,11 @@ function renderMeta() {
   $("method-plots").textContent = number.format(c.knownPlots);
   $("method-tags").textContent = number.format(c.knownTags);
   $("method-comments").textContent = number.format(c.plotsWithComments);
-  $("method-queue").textContent = number.format(c.pendingTags);
+  $("method-history").textContent = number.format(c.plotsWithHistory || 0);
   if (state.data.homepageHistory?.length) {
     const history = state.data.homepageHistory;
     const coverages = history.map((point) => point.observedPlots).filter(Number.isFinite);
-    $("method-note").textContent = `Wayback에서 색인된 제타 한국 홈 캡처 71개 중 현재 ${number.format(history.length)}개 날짜(${history[0].date}~${history[history.length - 1].date})의 수치를 복원함. 캡처당 홈 노출 플롯은 ${number.format(Math.min(...coverages))}~${number.format(Math.max(...coverages))}개로 달라짐. 이는 플랫폼 전수 합계가 아니라 공개 표본이며, 나머지 캡처는 응답 실패·구조 차이로 아직 미복원임.`;
+    $("method-note").textContent = `Wayback 한국 홈은 색인 71개 중 ${number.format(history.length)}개 날짜(${history[0].date}~${history[history.length - 1].date})를 복원했고, 보관 API JSON에서는 플롯-날짜 원값 ${number.format(c.waybackApiObservations || 0)}개를 추가 복원함. 현재 ${number.format(c.plotsWithHistory || 0)}개 플롯이 2개 이상의 대화수 관측점을 가짐. 홈 캡처는 플랫폼 전수가 아니라 공개 표본이며 빈 날짜는 생성하지 않음.`;
   }
   if (state.data.errors?.length) {
     $("error-box").hidden = false;
@@ -276,11 +325,20 @@ function drawChart() {
       ? `원값 ${number.format(history.length)}일 · 캡처당 ${number.format(Math.min(...coverages))}~${number.format(Math.max(...coverages))}개 플롯`
       : "캡처당 플롯 —";
     $("history-source-link").hidden = false;
+    $("history-source-link").href = "https://web.archive.org/web/20240522165134id_/https://zeta-ai.io/ko";
+    $("history-source-link").textContent = "원문 캡처 ↗";
   } else if (restoredMode) {
-    $("history-source").textContent = "개별 플롯 원값";
-    $("history-points").textContent = `관측 ${number.format(points.length)}일`;
-    $("history-coverage").textContent = "서로 같은 플롯만 연결";
-    $("history-source-link").hidden = true;
+    $("history-source").textContent = "플롯별 원값 · Wayback+현재 API";
+    $("history-points").textContent = points.length
+      ? `${number.format(points.length)}점 · ${points[0].date}→${points[points.length - 1].date}`
+      : "관측점 없음";
+    $("history-coverage").textContent = "값이 확인된 날짜만 연결";
+    const latestSource = points[points.length - 1]?.sourceUrl;
+    $("history-source-link").hidden = !latestSource;
+    if (latestSource) {
+      $("history-source-link").href = latestSource;
+      $("history-source-link").textContent = "최근 원문 ↗";
+    }
   } else {
     $("history-source").textContent = "일일 공개 관측";
     $("history-points").textContent = `관측 ${number.format(points.length)}일`;
@@ -390,12 +448,19 @@ function bind() {
   }));
   $("metric-select").addEventListener("change", (event) => {
     state.metric = event.target.value;
-    $("history-plot-select").hidden = state.metric !== "restoredPlotChats";
+    $("plot-picker").hidden = state.metric !== "restoredPlotChats";
+    drawChart();
+  });
+  $("plot-search").addEventListener("input", (event) => {
+    renderPlotOptions(event.target.value);
     drawChart();
   });
   $("history-plot-select").addEventListener("change", (event) => {
     state.restoredPlotId = event.target.value;
     drawChart();
+  });
+  $("detail-chart-button").addEventListener("click", () => {
+    if (state.detailPlotId) showPlotChart(state.detailPlotId);
   });
   window.addEventListener("resize", () => requestAnimationFrame(drawChart));
   $("history-chart").addEventListener("mousemove", (event) => {
@@ -409,7 +474,7 @@ function bind() {
     if (!nearest || nearest.distance > 22) { $("chart-tooltip").hidden = true; return; }
     const tip = $("chart-tooltip");
     tip.innerHTML = nearest.point.restoredMode
-      ? `${escapeHtml(nearest.point.date)}<strong>${exact(nearest.point.value)}</strong><span>정확한 누적 대화 원값</span>`
+        ? `${escapeHtml(nearest.point.date)}<strong>${exact(nearest.point.value)}</strong><span>${escapeHtml(sourceLabel(nearest.point.source))}</span>`
       : state.metric === "homepageMatchedIndex"
         ? `${escapeHtml(nearest.point.date)}<strong>지수 ${exact(nearest.point.value)}</strong><span>${nearest.point.matchedPlots ? `동일 플롯 ${exact(nearest.point.matchedPlots)}개 매칭` : "기준값"}</span>`
         : `${escapeHtml(nearest.point.date)}<strong>${exact(nearest.point.value)}</strong><span>관측 플롯 ${exact(nearest.point.observedPlots)}개</span>`;
@@ -425,20 +490,22 @@ async function boot() {
     const response = await fetch(`public/data/dashboard.json?t=${Date.now()}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.data = await response.json();
-    const restoredPlots = state.data.plots
-      .filter((plot) => (plot.series || []).filter((point) => point.chats != null).length > 1)
-      .sort((a, b) => b.series.length - a.series.length || a.series[0].date.localeCompare(b.series[0].date));
-    if (restoredPlots.length) {
-      state.restoredPlotId = restoredPlots[0].id;
-      $("history-plot-select").innerHTML = restoredPlots.map((plot) =>
-        `<option value="${escapeHtml(plot.id)}">${escapeHtml(plot.name)} · ${plot.series.length}점</option>`
-      ).join("");
+    state.chartablePlots = state.data.plots
+      .filter((plot) => (plot.series || []).some((point) => point.chats != null))
+      .sort((a, b) => {
+        const aPoints = a.series.filter((point) => point.chats != null).length;
+        const bPoints = b.series.filter((point) => point.chats != null).length;
+        return bPoints - aPoints || (b.chats || 0) - (a.chats || 0);
+      });
+    if (state.chartablePlots.length) {
+      state.restoredPlotId = state.chartablePlots[0].id;
+      renderPlotOptions();
     }
     if (!state.data.homepageHistory?.length) {
-      state.metric = restoredPlots.length ? "restoredPlotChats" : "averageChatsPerPlot";
+      state.metric = state.chartablePlots.length ? "restoredPlotChats" : "averageChatsPerPlot";
       $("metric-select").value = state.metric;
     }
-    $("history-plot-select").hidden = state.metric !== "restoredPlotChats";
+    $("plot-picker").hidden = state.metric !== "restoredPlotChats";
     const end = state.data.latestDate;
     const start = parseDay(end); start.setDate(start.getDate() - 30);
     state.customStart = dayString(start); state.customEnd = end;

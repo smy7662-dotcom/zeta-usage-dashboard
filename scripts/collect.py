@@ -783,6 +783,8 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
                         "chats": item["interaction_count"],
                         "chatsWithRegen": item["interaction_with_regen"],
                         "comments": item["comment_count"],
+                        "source": item["source"],
+                        "sourceUrl": item["source_url"],
                     }
                     for item in series
                 ],
@@ -850,6 +852,14 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             "pendingTags": pending_tags,
             "plotsWithCurrentValues": len(current_latest),
             "plotsWithComments": len(latest_comments),
+            "plotsWithHistory": sum(
+                1
+                for series in by_plot.values()
+                if sum(row["interaction_count"] is not None for row in series) >= 2
+            ),
+            "waybackApiObservations": db.execute(
+                "SELECT COUNT(*) FROM plot_observations WHERE source='wayback-api'"
+            ).fetchone()[0],
         },
         "platformHistory": platform_history,
         "homepageHistory": build_homepage_history(db),

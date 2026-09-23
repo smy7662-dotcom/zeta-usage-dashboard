@@ -51,14 +51,17 @@
           <option value="homepageMedianChats">과거 프록시 · 홈 중앙값</option>
           <option value="homepageAverageChats">과거 프록시 · 홈 평균</option>
           <option value="homepageTotalChats">과거 프록시 · 홈 노출 합계</option>
-          <option value="restoredPlotChats">과거 원값 · 개별 플롯</option>
+          <option value="restoredPlotChats">플롯별 · 실제 누적 대화</option>
           <option value="averageChatsPerPlot">일일 관측 · 플롯당 평균</option>
           <option value="totalChats">일일 관측 · 플롯 총대화</option>
           <option value="totalChatsWithRegen">일일 관측 · 재생성 포함</option>
           <option value="totalComments">일일 관측 · 댓글 합계</option>
           <option value="observedPlots">일일 관측 · 플롯 수</option>
         </select>
-        <select id="history-plot-select" aria-label="복원 플롯 선택" hidden></select>
+        <div class="plot-picker" id="plot-picker" hidden>
+          <input type="search" id="plot-search" placeholder="플롯명·제작자·태그 검색" aria-label="플롯 검색">
+          <select id="history-plot-select" aria-label="플롯 선택"></select>
+        </div>
       </div>
     </section>
 
@@ -148,7 +151,10 @@
           <h2 id="detail-name">—</h2>
           <p class="annotation" id="detail-meta"></p>
         </div>
-        <a id="detail-link" class="source-link" target="_blank" rel="noreferrer">제타에서 보기 ↗</a>
+        <div class="detail-actions">
+          <button id="detail-chart-button" class="source-link" type="button">대화 추이 보기</button>
+          <a id="detail-link" class="source-link" target="_blank" rel="noreferrer">제타에서 보기 ↗</a>
+        </div>
       </div>
       <div class="detail-stats" id="detail-stats"></div>
       <div class="tag-cloud" id="detail-tags"></div>
@@ -163,7 +169,7 @@
         <div><strong id="method-plots">—</strong><span>발견 고유 플롯</span></div>
         <div><strong id="method-tags">—</strong><span>발견 태그</span></div>
         <div><strong id="method-comments">—</strong><span>댓글 확보 플롯</span></div>
-        <div><strong id="method-queue">—</strong><span>남은 태그 큐</span></div>
+        <div><strong id="method-history">—</strong><span>대화 추이 플롯</span></div>
       </div>
       <p class="caveat" id="method-note">Wayback 홈 화면 캡처에서 당시 실제 노출된 플롯의 원값을 날짜별로 복원함. Wayback에 플랫폼 전체 플롯을 한 번에 담은 전수 스냅샷이 없다고 단정할 수는 없으나, 현재 확인·복원한 자료는 홈 공개 표본임. 플랫폼 전수 합계로 읽으면 안 됨.</p>
       <div class="source-row">

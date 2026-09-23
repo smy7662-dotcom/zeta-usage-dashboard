@@ -183,8 +183,17 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args()
 
-    captures = homepage_captures()
     db = connect(Path(args.db))
+    all_captures = homepage_captures()
+    existing_days = {
+        row[0].replace("-", "")
+        for row in db.execute("SELECT observed_date FROM homepage_observations").fetchall()
+    }
+    captures = [
+        capture
+        for capture in all_captures
+        if capture["timestamp"][:8] not in existing_days
+    ]
     errors: list[str] = []
     results: list[dict[str, Any]] = []
     try:
@@ -215,7 +224,9 @@ def main() -> int:
         print(
             json.dumps(
                 {
-                    "indexedCaptures": len(captures),
+                    "indexedCaptures": len(all_captures),
+                    "previouslyRestoredDays": len(existing_days),
+                    "pendingCaptures": len(captures),
                     "savedDays": len(best_by_day),
                     "errors": len(errors),
                 }

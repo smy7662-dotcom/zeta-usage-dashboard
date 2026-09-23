@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from scripts.backfill_homepage import extract_homepage_plots
+from scripts.backfill_wayback_api import DETAIL_API, RANKING_API
 from scripts.backfill_wayback import parse_counts
 from scripts.collect import (
     build_dashboard,
@@ -66,6 +67,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(dates, ["2026-09-20", "2026-09-23"])
         written = json.loads((self.root / "out" / "dashboard.json").read_text("utf-8"))
         self.assertEqual(len(written["platformHistory"]), 2)
+        self.assertEqual(written["plots"][0]["series"][0]["source"], "detail")
 
     def test_wayback_parser_requires_real_integer(self):
         html = r'{\"interactionCount\":6606886,\"interactionCountWithRegen\":7973919}'
@@ -115,6 +117,16 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(history[0]["matchedGrowthIndex"], 100.0)
         self.assertEqual(history[1]["matchedGrowthIndex"], 200.0)
         self.assertEqual(history[1]["matchedPlots"], 10)
+
+    def test_wayback_api_url_filter_excludes_subresources(self):
+        detail = "https://api.zeta-ai.io/v1/plots/004c611d-3ca2-46d3-b443-786552edfe94"
+        self.assertIsNotNone(DETAIL_API.match(detail))
+        self.assertIsNone(DETAIL_API.match(f"{detail}/comments/count"))
+        self.assertIsNotNone(
+            RANKING_API.match(
+                "https://api.zeta-ai.io/v1/plots/ranking?limit=10&type=DAILY"
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -1,12 +1,14 @@
 {
-  "updatedAt": "2026-09-23T03:40:31Z",
+  "updatedAt": "2026-09-23T04:16:27Z",
   "coverage": {
-    "knownPlots": 1408,
-    "knownTags": 1913,
+    "knownPlots": 1574,
+    "knownTags": 2054,
     "completedTags": 0,
-    "pendingTags": 1913,
+    "pendingTags": 2054,
     "plotsWithCurrentValues": 909,
-    "plotsWithComments": 34
+    "plotsWithComments": 34,
+    "plotsWithHistory": 219,
+    "waybackApiObservations": 133
   },
   "errors": []
 }
