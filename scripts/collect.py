@@ -658,6 +658,11 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
         )
 
     latest_date = max((row["observed_date"] for row in latest.values()), default=None)
+    current_latest = {
+        plot_id: row
+        for plot_id, row in latest.items()
+        if row["observed_date"] == latest_date
+    }
     plot_payloads: list[dict[str, Any]] = []
     deltas: dict[str, dict[int, int | None]] = {}
     for plot_id, row in latest.items():
@@ -709,7 +714,11 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
     for row in db.execute("SELECT tag, plot_id FROM plot_tags"):
         tag_members[row["tag"]].append(row["plot_id"])
     for tag, members in tag_members.items():
-        current_rows = [latest[plot_id] for plot_id in members if plot_id in latest]
+        current_rows = [
+            current_latest[plot_id]
+            for plot_id in members
+            if plot_id in current_latest
+        ]
         current_chats = [row["interaction_count"] for row in current_rows if row["interaction_count"] is not None]
         current_regens = [
             row["interaction_with_regen"]
@@ -746,7 +755,7 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
 
     latest_comments = [
         row["latest_comment_count"]
-        for row in latest.values()
+        for row in current_latest.values()
         if row["latest_comment_count"] is not None
     ]
     payload = {
@@ -758,7 +767,7 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             "knownTags": known_tags,
             "completedTags": completed_tags,
             "pendingTags": pending_tags,
-            "plotsWithCurrentValues": len(latest),
+            "plotsWithCurrentValues": len(current_latest),
             "plotsWithComments": len(latest_comments),
         },
         "platformHistory": platform_history,

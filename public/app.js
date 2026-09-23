@@ -1,13 +1,15 @@
 const state = {
   data: null,
-  days: 30,
+  days: "all",
   customStart: null,
   customEnd: null,
-  metric: "averageChatsPerPlot",
+  metric: "restoredPlotChats",
+  restoredPlotId: null,
   chartPoints: [],
 };
 
 const metricLabels = {
+  restoredPlotChats: "Wayback 복원 플롯",
   averageChatsPerPlot: "플롯당 누적 대화",
   totalChats: "관측 플롯 총대화",
   totalChatsWithRegen: "재생성 포함 총대화",
@@ -62,7 +64,10 @@ function range() {
     ? state.customEnd
     : state.data.latestDate;
   let start;
-  if (state.days === "custom" && state.customStart) {
+  if (state.days === "all") {
+    const available = state.data.platformHistory.map((point) => point.date).sort();
+    start = available[0] || end;
+  } else if (state.days === "custom" && state.customStart) {
     start = state.customStart;
   } else {
     const date = parseDay(end);
@@ -213,9 +218,19 @@ function drawChart() {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, width, height);
 
-  const metric = state.metric;
-  const points = filtered(state.data.platformHistory).filter((point) => point[metric] != null);
-  $("chart-title").textContent = metricLabels[metric];
+  const restoredMode = state.metric === "restoredPlotChats";
+  const restoredPlot = restoredMode
+    ? state.data.plots.find((plot) => plot.id === state.restoredPlotId)
+    : null;
+  const metric = restoredMode ? "chats" : state.metric;
+  const sourceSeries = restoredMode ? (restoredPlot?.series || []) : state.data.platformHistory;
+  const points = filtered(sourceSeries).filter((point) => point[metric] != null);
+  $("chart-title").textContent = restoredMode
+    ? `${restoredPlot?.name || "복원 플롯"} 누적 대화`
+    : metricLabels[metric];
+  $("chart-annotation").textContent = restoredMode
+    ? "동일 플롯의 Wayback·현재 원값 · 표식이 있는 날짜만 확인됨"
+    : "표식 = 값이 확인된 날 · 선은 관측값 연결 · 날짜별 관측 플롯 수가 다를 수 있음";
   $("chart-empty").hidden = points.length > 0;
   if (!points.length) {
     state.chartPoints = [];
@@ -224,7 +239,7 @@ function drawChart() {
   }
   const values = points.map((point) => point[metric]);
   const first = values[0], last = values[values.length - 1];
-  const coverageChanged = points.length > 1 && points[0].observedPlots !== points[points.length - 1].observedPlots;
+  const coverageChanged = !restoredMode && points.length > 1 && points[0].observedPlots !== points[points.length - 1].observedPlots;
   $("chart-summary").textContent = points.length > 1
     ? coverageChanged
       ? `관측 ${number.format(points[0].observedPlots)}→${number.format(points[points.length - 1].observedPlots)}개`
@@ -283,7 +298,7 @@ function drawChart() {
     ctx.lineCap = "round";
     ctx.stroke();
   }
-  state.chartPoints = points.map((point) => ({ ...point, x: x(point.date), y: y(point[metric]), value: point[metric] }));
+  state.chartPoints = points.map((point) => ({ ...point, x: x(point.date), y: y(point[metric]), value: point[metric], restoredMode }));
   state.chartPoints.forEach((point) => {
     ctx.beginPath(); ctx.arc(point.x, point.y, 4.5, 0, Math.PI * 2);
     ctx.fillStyle = "#fff"; ctx.fill();
@@ -302,7 +317,9 @@ function bind() {
     button.addEventListener("click", () => {
       document.querySelectorAll("#period-buttons button").forEach((item) => item.classList.remove("active"));
       button.classList.add("active");
-      state.days = button.dataset.days === "custom" ? "custom" : Number(button.dataset.days);
+      state.days = ["custom", "all"].includes(button.dataset.days)
+        ? button.dataset.days
+        : Number(button.dataset.days);
       $("custom-dates").hidden = state.days !== "custom";
       renderAll();
     });
@@ -312,7 +329,15 @@ function bind() {
     state.customEnd = $("end-date").value;
     if (state.customStart && state.customEnd) renderAll();
   }));
-  $("metric-select").addEventListener("change", (event) => { state.metric = event.target.value; drawChart(); });
+  $("metric-select").addEventListener("change", (event) => {
+    state.metric = event.target.value;
+    $("history-plot-select").hidden = state.metric !== "restoredPlotChats";
+    drawChart();
+  });
+  $("history-plot-select").addEventListener("change", (event) => {
+    state.restoredPlotId = event.target.value;
+    drawChart();
+  });
   window.addEventListener("resize", () => requestAnimationFrame(drawChart));
   $("history-chart").addEventListener("mousemove", (event) => {
     if (!state.chartPoints.length) return;
@@ -324,7 +349,9 @@ function bind() {
     }, null);
     if (!nearest || nearest.distance > 22) { $("chart-tooltip").hidden = true; return; }
     const tip = $("chart-tooltip");
-    tip.innerHTML = `${escapeHtml(nearest.point.date)}<strong>${exact(nearest.point.value)}</strong><span>관측 플롯 ${exact(nearest.point.observedPlots)}개</span>`;
+    tip.innerHTML = nearest.point.restoredMode
+      ? `${escapeHtml(nearest.point.date)}<strong>${exact(nearest.point.value)}</strong><span>정확한 누적 대화 원값</span>`
+      : `${escapeHtml(nearest.point.date)}<strong>${exact(nearest.point.value)}</strong><span>관측 플롯 ${exact(nearest.point.observedPlots)}개</span>`;
     tip.hidden = false;
     tip.style.left = `${Math.min(rect.width - 170, Math.max(6, nearest.point.x + 12))}px`;
     tip.style.top = `${Math.max(4, nearest.point.y - 70)}px`;
@@ -337,6 +364,19 @@ async function boot() {
     const response = await fetch(`public/data/dashboard.json?t=${Date.now()}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.data = await response.json();
+    const restoredPlots = state.data.plots
+      .filter((plot) => (plot.series || []).filter((point) => point.chats != null).length > 1)
+      .sort((a, b) => b.series.length - a.series.length || a.series[0].date.localeCompare(b.series[0].date));
+    if (restoredPlots.length) {
+      state.restoredPlotId = restoredPlots[0].id;
+      $("history-plot-select").innerHTML = restoredPlots.map((plot) =>
+        `<option value="${escapeHtml(plot.id)}">${escapeHtml(plot.name)} · ${plot.series.length}점</option>`
+      ).join("");
+    } else {
+      state.metric = "averageChatsPerPlot";
+      $("metric-select").value = state.metric;
+      $("history-plot-select").hidden = true;
+    }
     const end = state.data.latestDate;
     const start = parseDay(end); start.setDate(start.getDate() - 30);
     state.customStart = dayString(start); state.customEnd = end;

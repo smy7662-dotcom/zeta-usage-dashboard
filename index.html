@@ -31,8 +31,9 @@
       <div class="control-group">
         <span class="control-label">기간</span>
         <div class="segmented" id="period-buttons">
+          <button class="active" data-days="all">전체</button>
           <button data-days="7">7일</button>
-          <button class="active" data-days="30">30일</button>
+          <button data-days="30">30일</button>
           <button data-days="60">60일</button>
           <button data-days="custom">직접 설정</button>
         </div>
@@ -45,12 +46,14 @@
       <div class="control-group metric-control">
         <span class="control-label">차트</span>
         <select id="metric-select">
+          <option value="restoredPlotChats">Wayback 복원 플롯</option>
           <option value="averageChatsPerPlot">플롯당 누적 대화</option>
           <option value="totalChats">관측 플롯 총대화</option>
           <option value="totalChatsWithRegen">재생성 포함 총대화</option>
           <option value="totalComments">댓글 합계</option>
           <option value="observedPlots">관측 플롯 수</option>
         </select>
+        <select id="history-plot-select" aria-label="복원 플롯 선택"></select>
       </div>
     </section>
 
@@ -82,7 +85,7 @@
         <div>
           <p class="section-kicker">관심도</p>
           <h2 id="chart-title">플롯당 누적 대화</h2>
-          <p class="annotation">표식 = 값이 확인된 날 · 선은 관측값 연결 · 빈 날짜는 보간하지 않음</p>
+          <p class="annotation" id="chart-annotation">표식 = 값이 확인된 날 · 선은 관측값 연결 · 빈 날짜는 보간하지 않음</p>
         </div>
         <div class="chart-summary" id="chart-summary">—</div>
       </div>
@@ -151,7 +154,7 @@
         <div><strong id="method-comments">—</strong><span>댓글 확보 플롯</span></div>
         <div><strong id="method-queue">—</strong><span>남은 태그 큐</span></div>
       </div>
-      <p class="caveat" id="method-note">초기 전수조사 중에는 발견 범위가 늘며 총량도 함께 커질 수 있음. 관심도 방향은 두 시점 모두 값이 있는 동일 플롯의 증분을 우선 봄.</p>
+      <p class="caveat" id="method-note">플랫폼 전체의 과거 전수값은 Wayback에 남아 있지 않음. 따라서 기본 차트는 두 번 이상 원값이 확인된 동일 플롯의 복원 시계열이며, 플랫폼 총량은 오늘부터 매일 축적함. 초기 전수조사 중에는 발견 범위가 늘 수 있어 관심도 방향은 동일 플롯 증분을 우선 봄.</p>
       <div class="source-row">
         <a href="https://api.zeta-ai.io/v1/plots/ranking?type=GLOBAL&amp;limit=100&amp;gender=ALL" target="_blank" rel="noreferrer">제타 랭킹 API</a>
         <a href="https://api.zeta-ai.io/v1/discovery-tab" target="_blank" rel="noreferrer">디스커버리 API</a>
