@@ -1,7 +1,9 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.backfill_homepage import extract_homepage_plots
 from scripts.backfill_wayback_api import DETAIL_API, RANKING_API
@@ -11,6 +13,7 @@ from scripts.collect import (
     connect,
     ingest_payload,
     normalize_plot,
+    refresh_known_plots,
 )
 
 
@@ -147,6 +150,33 @@ class CollectorTests(unittest.TestCase):
                 "https://api.zeta-ai.io/v1/plots/ranking?limit=10&type=DAILY"
             )
         )
+
+    def test_refresh_prioritizes_wayback_cohort_for_current_matching(self):
+        self.ingest(
+            dict(SAMPLE, id="historical"),
+            "2026-06-18",
+            observed_at="2026-09-22T00:00:00Z",
+            source="wayback-home",
+        )
+        self.ingest(
+            dict(SAMPLE, id="not-historical"),
+            "2026-01-01",
+            observed_at="2026-01-01T00:00:00Z",
+            source="detail",
+        )
+        refreshed = dict(SAMPLE, id="historical", interactionCount=400)
+        errors = []
+        with patch("scripts.collect.request_json", return_value=refreshed) as request:
+            count = refresh_known_plots(
+                self.db,
+                datetime(2026, 9, 23, tzinfo=timezone.utc),
+                limit=1,
+                workers=1,
+                errors=errors,
+            )
+        self.assertEqual(count, 1)
+        self.assertEqual(errors, [])
+        self.assertTrue(request.call_args.args[0].endswith("/v1/plots/historical"))
 
 
 if __name__ == "__main__":

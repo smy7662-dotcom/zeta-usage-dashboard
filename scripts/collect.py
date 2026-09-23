@@ -522,9 +522,14 @@ def refresh_known_plots(
     observed_at, observed_date = iso_z(now), kst_day(now)
     rows = db.execute(
         """
-        SELECT plot_id
-        FROM plots
-        ORDER BY last_seen_at, COALESCE(last_interaction_count, 0) DESC
+        SELECT p.plot_id
+        FROM plots p
+        ORDER BY EXISTS (
+                   SELECT 1 FROM plot_observations h
+                   WHERE h.plot_id=p.plot_id AND h.source LIKE 'wayback%'
+                 ) DESC,
+                 p.last_seen_at,
+                 COALESCE(p.last_interaction_count, 0) DESC
         LIMIT ?
         """,
         (limit,),
