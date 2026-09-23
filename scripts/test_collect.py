@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.backfill_homepage import extract_homepage_plots
 from scripts.backfill_wayback import parse_counts
 from scripts.collect import (
     build_dashboard,
@@ -70,6 +71,50 @@ class CollectorTests(unittest.TestCase):
         html = r'{\"interactionCount\":6606886,\"interactionCountWithRegen\":7973919}'
         self.assertEqual(parse_counts(html), (6606886, 7973919))
         self.assertEqual(parse_counts("interactionCount: null"), (None, None))
+
+    def test_homepage_parser_extracts_flight_plot(self):
+        flight = '14:[{"id":"plot-a","name":"플롯 A","interactionCount":123,"interactionCountWithRegen":140}]\n'
+        html = f"<script>self.__next_f.push({json.dumps([1, flight])})</script>"
+        plots = extract_homepage_plots(html)
+        self.assertEqual(plots["plot-a"]["interactionCount"], 123)
+        self.assertEqual(plots["plot-a"]["interactionCountWithRegen"], 140)
+
+    def test_homepage_growth_index_uses_matched_plots(self):
+        for day, multiplier in (("2024-05-22", 1), ("2024-05-25", 2)):
+            self.db.execute(
+                """
+                INSERT INTO homepage_observations (
+                  observed_date, observed_at, observed_plots, total_chats,
+                  average_chats_per_plot, median_chats_per_plot, top10_chats,
+                  source_url
+                ) VALUES (?, ?, 10, ?, ?, ?, ?, ?)
+                """,
+                (day, f"{day}T00:00:00Z", 550 * multiplier,
+                 55 * multiplier, 55 * multiplier, 550 * multiplier,
+                 f"https://example.test/{day}"),
+            )
+            for index in range(10):
+                plot_id = f"plot-{index}"
+                self.db.execute(
+                    "INSERT OR IGNORE INTO plots (plot_id, name, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?)",
+                    (plot_id, plot_id, f"{day}T00:00:00Z", f"{day}T00:00:00Z"),
+                )
+                self.db.execute(
+                    """
+                    INSERT INTO plot_observations (
+                      plot_id, observed_date, observed_at, source,
+                      interaction_count, source_url
+                    ) VALUES (?, ?, ?, 'wayback-home', ?, ?)
+                    """,
+                    (plot_id, day, f"{day}T00:00:00Z",
+                     (index + 1) * 10 * multiplier, f"https://example.test/{day}"),
+                )
+        self.db.commit()
+        payload = build_dashboard(self.db, self.root / "out", [])
+        history = payload["homepageHistory"]
+        self.assertEqual(history[0]["matchedGrowthIndex"], 100.0)
+        self.assertEqual(history[1]["matchedGrowthIndex"], 200.0)
+        self.assertEqual(history[1]["matchedPlots"], 10)
 
 
 if __name__ == "__main__":

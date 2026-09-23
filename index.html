@@ -44,16 +44,21 @@
         <label>종료 <input type="date" id="end-date"></label>
       </div>
       <div class="control-group metric-control">
-        <span class="control-label">차트</span>
+        <span class="control-label">데이터 레이어</span>
         <select id="metric-select">
-          <option value="restoredPlotChats">Wayback 복원 플롯</option>
-          <option value="averageChatsPerPlot">플롯당 누적 대화</option>
-          <option value="totalChats">관측 플롯 총대화</option>
-          <option value="totalChatsWithRegen">재생성 포함 총대화</option>
-          <option value="totalComments">댓글 합계</option>
-          <option value="observedPlots">관측 플롯 수</option>
+          <option value="homepageMatchedIndex" selected>과거 프록시 · 동일 플롯 성장지수</option>
+          <option value="homepageTop10Chats">과거 원값 · 홈 상위 10</option>
+          <option value="homepageMedianChats">과거 프록시 · 홈 중앙값</option>
+          <option value="homepageAverageChats">과거 프록시 · 홈 평균</option>
+          <option value="homepageTotalChats">과거 프록시 · 홈 노출 합계</option>
+          <option value="restoredPlotChats">과거 원값 · 개별 플롯</option>
+          <option value="averageChatsPerPlot">일일 관측 · 플롯당 평균</option>
+          <option value="totalChats">일일 관측 · 플롯 총대화</option>
+          <option value="totalChatsWithRegen">일일 관측 · 재생성 포함</option>
+          <option value="totalComments">일일 관측 · 댓글 합계</option>
+          <option value="observedPlots">일일 관측 · 플롯 수</option>
         </select>
-        <select id="history-plot-select" aria-label="복원 플롯 선택"></select>
+        <select id="history-plot-select" aria-label="복원 플롯 선택" hidden></select>
       </div>
     </section>
 
@@ -84,10 +89,16 @@
       <div class="panel-head">
         <div>
           <p class="section-kicker">관심도</p>
-          <h2 id="chart-title">플롯당 누적 대화</h2>
+          <h2 id="chart-title">동일 플롯 대화 성장지수</h2>
           <p class="annotation" id="chart-annotation">표식 = 값이 확인된 날 · 선은 관측값 연결 · 빈 날짜는 보간하지 않음</p>
         </div>
         <div class="chart-summary" id="chart-summary">—</div>
+      </div>
+      <div class="chart-facts" id="chart-facts">
+        <span id="history-source">Wayback 홈 공개 표본</span>
+        <span id="history-points">복원 날짜 —</span>
+        <span id="history-coverage">캡처당 플롯 —</span>
+        <a id="history-source-link" href="https://web.archive.org/web/20240522165134id_/https://zeta-ai.io/ko" target="_blank" rel="noreferrer">원문 캡처 ↗</a>
       </div>
       <div class="chart-wrap" id="chart-wrap">
         <canvas id="history-chart" aria-label="제타 관심도 시계열"></canvas>
@@ -154,7 +165,7 @@
         <div><strong id="method-comments">—</strong><span>댓글 확보 플롯</span></div>
         <div><strong id="method-queue">—</strong><span>남은 태그 큐</span></div>
       </div>
-      <p class="caveat" id="method-note">플랫폼 전체의 과거 전수값은 Wayback에 남아 있지 않음. 따라서 기본 차트는 두 번 이상 원값이 확인된 동일 플롯의 복원 시계열이며, 플랫폼 총량은 오늘부터 매일 축적함. 초기 전수조사 중에는 발견 범위가 늘 수 있어 관심도 방향은 동일 플롯 증분을 우선 봄.</p>
+      <p class="caveat" id="method-note">Wayback 홈 화면 캡처에서 당시 실제 노출된 플롯의 원값을 날짜별로 복원함. Wayback에 플랫폼 전체 플롯을 한 번에 담은 전수 스냅샷이 없다고 단정할 수는 없으나, 현재 확인·복원한 자료는 홈 공개 표본임. 플랫폼 전수 합계로 읽으면 안 됨.</p>
       <div class="source-row">
         <a href="https://api.zeta-ai.io/v1/plots/ranking?type=GLOBAL&amp;limit=100&amp;gender=ALL" target="_blank" rel="noreferrer">제타 랭킹 API</a>
         <a href="https://api.zeta-ai.io/v1/discovery-tab" target="_blank" rel="noreferrer">디스커버리 API</a>

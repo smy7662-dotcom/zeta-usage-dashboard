@@ -1,7 +1,8 @@
 data/*.sqlite3
 data/*.sqlite3-*
+data/*.json
+data/*.html
 __pycache__/
 *.pyc
 .codex/
 dist/
-

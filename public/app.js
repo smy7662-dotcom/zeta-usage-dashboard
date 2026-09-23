@@ -3,12 +3,17 @@ const state = {
   days: "all",
   customStart: null,
   customEnd: null,
-  metric: "restoredPlotChats",
+  metric: "homepageMatchedIndex",
   restoredPlotId: null,
   chartPoints: [],
 };
 
 const metricLabels = {
+  homepageMatchedIndex: "동일 플롯 대화 성장지수",
+  homepageAverageChats: "홈 노출 플롯당 평균 대화",
+  homepageMedianChats: "홈 노출 플롯 중앙값",
+  homepageTotalChats: "홈 노출 플롯 총대화",
+  homepageTop10Chats: "홈 노출 상위 10개 총대화",
   restoredPlotChats: "Wayback 복원 플롯",
   averageChatsPerPlot: "플롯당 누적 대화",
   totalChats: "관측 플롯 총대화",
@@ -32,9 +37,11 @@ function dayString(date) {
   return `${y}-${m}-${d}`;
 }
 
-function shortDate(value) {
+function axisDate(value, showYear) {
   const d = parseDay(value);
-  return `${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")}`;
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return showYear ? `${String(d.getFullYear()).slice(2)}.${month}.${day}` : `${month}.${day}`;
 }
 
 function compact(value) {
@@ -191,6 +198,11 @@ function renderMeta() {
   $("method-tags").textContent = number.format(c.knownTags);
   $("method-comments").textContent = number.format(c.plotsWithComments);
   $("method-queue").textContent = number.format(c.pendingTags);
+  if (state.data.homepageHistory?.length) {
+    const history = state.data.homepageHistory;
+    const coverages = history.map((point) => point.observedPlots).filter(Number.isFinite);
+    $("method-note").textContent = `Wayback에서 색인된 제타 한국 홈 캡처 71개 중 현재 ${number.format(history.length)}개 날짜(${history[0].date}~${history[history.length - 1].date})의 수치를 복원함. 캡처당 홈 노출 플롯은 ${number.format(Math.min(...coverages))}~${number.format(Math.max(...coverages))}개로 달라짐. 이는 플랫폼 전수 합계가 아니라 공개 표본이며, 나머지 캡처는 응답 실패·구조 차이로 아직 미복원임.`;
+  }
   if (state.data.errors?.length) {
     $("error-box").hidden = false;
     $("error-list").innerHTML = state.data.errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("");
@@ -219,18 +231,60 @@ function drawChart() {
   ctx.clearRect(0, 0, width, height);
 
   const restoredMode = state.metric === "restoredPlotChats";
+  const homepageMode = state.metric.startsWith("homepage");
   const restoredPlot = restoredMode
     ? state.data.plots.find((plot) => plot.id === state.restoredPlotId)
     : null;
-  const metric = restoredMode ? "chats" : state.metric;
-  const sourceSeries = restoredMode ? (restoredPlot?.series || []) : state.data.platformHistory;
+  const homepageMetric = {
+    homepageMatchedIndex: "matchedGrowthIndex",
+    homepageAverageChats: "averageChatsPerPlot",
+    homepageMedianChats: "medianChatsPerPlot",
+    homepageTotalChats: "totalChats",
+    homepageTop10Chats: "top10Chats",
+  }[state.metric];
+  const metric = restoredMode ? "chats" : homepageMode ? homepageMetric : state.metric;
+  const sourceSeries = restoredMode
+    ? (restoredPlot?.series || [])
+    : homepageMode
+      ? (state.data.homepageHistory || [])
+      : state.data.platformHistory;
   const points = filtered(sourceSeries).filter((point) => point[metric] != null);
   $("chart-title").textContent = restoredMode
     ? `${restoredPlot?.name || "복원 플롯"} 누적 대화`
     : metricLabels[metric];
+  if (homepageMode) $("chart-title").textContent = metricLabels[state.metric];
   $("chart-annotation").textContent = restoredMode
     ? "동일 플롯의 Wayback·현재 원값 · 표식이 있는 날짜만 확인됨"
-    : "표식 = 값이 확인된 날 · 선은 관측값 연결 · 날짜별 관측 플롯 수가 다를 수 있음";
+    : homepageMode
+      ? state.metric === "homepageMatchedIndex"
+        ? "같은 플롯이 10개 이상 겹치는 캡처끼리 증가율 중앙값을 연결 · 2024.05.22 = 100"
+        : state.metric === "homepageTop10Chats"
+          ? "각 캡처의 홈 노출 플롯 중 대화량 상위 10개 합계 · 플랫폼 전체 상위 10이 아님"
+        : "Wayback 홈 화면 공개 표본 · 표식마다 당시 노출 플롯 수가 다름"
+      : "표식 = 값이 확인된 날 · 선은 관측값 연결 · 날짜별 관측 플롯 수가 다를 수 있음";
+
+  const facts = $("chart-facts");
+  facts.hidden = false;
+  if (homepageMode) {
+    const history = state.data.homepageHistory || [];
+    const coverages = history.map((point) => point.observedPlots).filter(Number.isFinite);
+    $("history-source").textContent = "Wayback 홈 공개 표본";
+    $("history-points").textContent = `복원 ${number.format(history.length)}일 / 색인 71캡처`;
+    $("history-coverage").textContent = coverages.length
+      ? `캡처당 ${number.format(Math.min(...coverages))}~${number.format(Math.max(...coverages))}개 플롯`
+      : "캡처당 플롯 —";
+    $("history-source-link").hidden = false;
+  } else if (restoredMode) {
+    $("history-source").textContent = "개별 플롯 원값";
+    $("history-points").textContent = `관측 ${number.format(points.length)}일`;
+    $("history-coverage").textContent = "서로 같은 플롯만 연결";
+    $("history-source-link").hidden = true;
+  } else {
+    $("history-source").textContent = "일일 공개 관측";
+    $("history-points").textContent = `관측 ${number.format(points.length)}일`;
+    $("history-coverage").textContent = "플롯 수 변화를 함께 확인";
+    $("history-source-link").hidden = true;
+  }
   $("chart-empty").hidden = points.length > 0;
   if (!points.length) {
     state.chartPoints = [];
@@ -239,9 +293,11 @@ function drawChart() {
   }
   const values = points.map((point) => point[metric]);
   const first = values[0], last = values[values.length - 1];
-  const coverageChanged = !restoredMode && points.length > 1 && points[0].observedPlots !== points[points.length - 1].observedPlots;
+  const coverageChanged = !restoredMode && !homepageMode && points.length > 1 && points[0].observedPlots !== points[points.length - 1].observedPlots;
   $("chart-summary").textContent = points.length > 1
-    ? coverageChanged
+    ? state.metric === "homepageMatchedIndex"
+      ? `${(last / first).toFixed(1)}배 · ${number.format(points.length)}개 관측점`
+      : coverageChanged
       ? `관측 ${number.format(points[0].observedPlots)}→${number.format(points[points.length - 1].observedPlots)}개`
       : `${signed.format(Math.round(last - first))} 변화`
     : `${exact(last)} 현재`;
@@ -279,11 +335,12 @@ function drawChart() {
 
   const labelIndexes = new Set([0, points.length - 1]);
   if (width > 600 && points.length > 2) labelIndexes.add(Math.floor((points.length - 1) / 2));
+  const showYear = parseDay(points[0].date).getFullYear() !== parseDay(points[points.length - 1].date).getFullYear();
   ctx.textBaseline = "top";
   points.forEach((point, index) => {
     if (!labelIndexes.has(index)) return;
     ctx.textAlign = index === 0 ? "left" : index === points.length - 1 ? "right" : "center";
-    ctx.fillText(shortDate(point.date), x(point.date), height - pad.bottom + 14);
+    ctx.fillText(axisDate(point.date, showYear), x(point.date), height - pad.bottom + 14);
   });
 
   if (points.length > 1) {
@@ -351,7 +408,9 @@ function bind() {
     const tip = $("chart-tooltip");
     tip.innerHTML = nearest.point.restoredMode
       ? `${escapeHtml(nearest.point.date)}<strong>${exact(nearest.point.value)}</strong><span>정확한 누적 대화 원값</span>`
-      : `${escapeHtml(nearest.point.date)}<strong>${exact(nearest.point.value)}</strong><span>관측 플롯 ${exact(nearest.point.observedPlots)}개</span>`;
+      : state.metric === "homepageMatchedIndex"
+        ? `${escapeHtml(nearest.point.date)}<strong>지수 ${exact(nearest.point.value)}</strong><span>${nearest.point.matchedPlots ? `동일 플롯 ${exact(nearest.point.matchedPlots)}개 매칭` : "기준값"}</span>`
+        : `${escapeHtml(nearest.point.date)}<strong>${exact(nearest.point.value)}</strong><span>관측 플롯 ${exact(nearest.point.observedPlots)}개</span>`;
     tip.hidden = false;
     tip.style.left = `${Math.min(rect.width - 170, Math.max(6, nearest.point.x + 12))}px`;
     tip.style.top = `${Math.max(4, nearest.point.y - 70)}px`;
@@ -372,11 +431,12 @@ async function boot() {
       $("history-plot-select").innerHTML = restoredPlots.map((plot) =>
         `<option value="${escapeHtml(plot.id)}">${escapeHtml(plot.name)} · ${plot.series.length}점</option>`
       ).join("");
-    } else {
-      state.metric = "averageChatsPerPlot";
-      $("metric-select").value = state.metric;
-      $("history-plot-select").hidden = true;
     }
+    if (!state.data.homepageHistory?.length) {
+      state.metric = restoredPlots.length ? "restoredPlotChats" : "averageChatsPerPlot";
+      $("metric-select").value = state.metric;
+    }
+    $("history-plot-select").hidden = state.metric !== "restoredPlotChats";
     const end = state.data.latestDate;
     const start = parseDay(end); start.setDate(start.getDate() - 30);
     state.customStart = dayString(start); state.customEnd = end;

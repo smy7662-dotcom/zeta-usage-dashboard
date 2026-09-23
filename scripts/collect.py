@@ -143,6 +143,18 @@ def initialize(db: sqlite3.Connection) -> None:
           errors_json TEXT NOT NULL DEFAULT '[]'
         );
 
+        CREATE TABLE IF NOT EXISTS homepage_observations (
+          observed_date TEXT PRIMARY KEY,
+          observed_at TEXT NOT NULL,
+          observed_plots INTEGER NOT NULL,
+          total_chats INTEGER NOT NULL,
+          total_chats_with_regen INTEGER,
+          average_chats_per_plot INTEGER NOT NULL,
+          median_chats_per_plot INTEGER NOT NULL,
+          top10_chats INTEGER NOT NULL,
+          source_url TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_observations_date
           ON plot_observations(observed_date);
         CREATE INDEX IF NOT EXISTS idx_observations_plot_date
@@ -610,6 +622,75 @@ def change(current: int | None, previous: int | None) -> int | None:
     return current - previous
 
 
+def build_homepage_history(db: sqlite3.Connection) -> list[dict[str, Any]]:
+    """홈 표본과 동일 플롯 매칭 성장지수를 함께 반환함.
+
+    각 날짜는 가장 가까운 이전 캡처 중 동일 플롯이 10개 이상인 날짜와
+    비교함. 개별 플롯 대화량 배수의 중앙값을 직전 지수에 연결하므로,
+    홈 노출 플롯 수가 바뀌어 생기는 합계 왜곡을 줄임.
+    """
+    rows = db.execute(
+        "SELECT * FROM homepage_observations ORDER BY observed_date"
+    ).fetchall()
+    plots_by_day: dict[str, dict[str, int]] = defaultdict(dict)
+    for row in db.execute(
+        """
+        SELECT observed_date, plot_id, interaction_count
+        FROM plot_observations
+        WHERE source='wayback-home' AND interaction_count IS NOT NULL
+        ORDER BY observed_date
+        """
+    ).fetchall():
+        plots_by_day[row["observed_date"]][row["plot_id"]] = row["interaction_count"]
+
+    history: list[dict[str, Any]] = []
+    index_by_day: dict[str, float] = {}
+    for row in rows:
+        day = row["observed_date"]
+        matched_index = 100.0 if not index_by_day else None
+        matched_plots = None
+        comparison_date = None
+        current = plots_by_day.get(day, {})
+        if index_by_day:
+            for previous in reversed(history):
+                previous_day = previous["date"]
+                if previous_day not in index_by_day:
+                    continue
+                prior = plots_by_day.get(previous_day, {})
+                overlap = [
+                    plot_id
+                    for plot_id in current.keys() & prior.keys()
+                    if prior[plot_id] > 0
+                ]
+                if len(overlap) < 10:
+                    continue
+                ratio = statistics.median(
+                    current[plot_id] / prior[plot_id] for plot_id in overlap
+                )
+                matched_index = index_by_day[previous_day] * ratio
+                matched_plots = len(overlap)
+                comparison_date = previous_day
+                break
+        if matched_index is not None:
+            index_by_day[day] = matched_index
+        history.append(
+            {
+                "date": day,
+                "observedPlots": row["observed_plots"],
+                "totalChats": row["total_chats"],
+                "totalChatsWithRegen": row["total_chats_with_regen"],
+                "averageChatsPerPlot": row["average_chats_per_plot"],
+                "medianChatsPerPlot": row["median_chats_per_plot"],
+                "top10Chats": row["top10_chats"],
+                "matchedGrowthIndex": round(matched_index, 1) if matched_index is not None else None,
+                "matchedPlots": matched_plots,
+                "comparisonDate": comparison_date,
+                "sourceUrl": row["source_url"],
+            }
+        )
+    return history
+
+
 def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) -> dict[str, Any]:
     known_plots = db.execute("SELECT COUNT(*) FROM plots").fetchone()[0]
     known_tags = db.execute("SELECT COUNT(*) FROM tag_queue").fetchone()[0]
@@ -771,6 +852,7 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             "plotsWithComments": len(latest_comments),
         },
         "platformHistory": platform_history,
+        "homepageHistory": build_homepage_history(db),
         "plots": plot_payloads,
         "tags": tag_stats,
         "errors": errors[-50:],
