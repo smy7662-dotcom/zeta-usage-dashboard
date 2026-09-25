@@ -10,6 +10,8 @@ const state = {
   detailPlotId: null,
   chartPoints: [],
   activityChartPoints: [],
+  regenChartPoints: [],
+  regenVisible: new Set([10, 30, 50, 100]),
   coreChartPoints: [],
 };
 
@@ -37,6 +39,12 @@ const activityDirectionLabels = {
   concentratedAcceleration: "소수 플롯 중심 가속",
   decelerating: "감속",
   mixed: "방향 불명확",
+};
+const regenColors = {
+  10: "#386fe5",
+  30: "#1d8b67",
+  50: "#e87553",
+  100: "#7667e8",
 };
 
 function parseDay(value) {
@@ -299,6 +307,141 @@ function drawActivityChart() {
     ctx.fillText(axisDate(point.date, showYear), point.x, height - pad.bottom + 14);
   });
   state.activityChartPoints = visualPoints;
+}
+
+function regenerationData() {
+  return state.data.regenerationCohorts || {
+    cohorts: [],
+    latestSeparableDate: null,
+    unseparableFrom: null,
+    currentSeparable: false,
+  };
+}
+
+function renderRegenerationSummary() {
+  const data = regenerationData();
+  const cohorts = new Map((data.cohorts || []).map((cohort) => [cohort.size, cohort]));
+  [10, 30, 50, 100].forEach((size) => {
+    const cohort = cohorts.get(size);
+    const latest = cohort?.history?.[cohort.history.length - 1];
+    const rate = $(`regen-rate-${size}`);
+    const note = $(`regen-note-${size}`);
+    rate.textContent = latest == null ? "—" : `${latest.regenerationRatePct.toFixed(1)}%`;
+    rate.title = latest == null ? "" : `정확히 ${latest.regenerationRatePct.toFixed(2)}%`;
+    note.textContent = latest == null
+      ? "비교 가능한 복원 구간 없음"
+      : `${latest.startDate.replaceAll("-", ".")}→${latest.date.replaceAll("-", ".")} · ${number.format(latest.matchedPlots)}/${number.format(size)}개`;
+  });
+
+  $("regen-summary").textContent = data.latestSeparableDate
+    ? `${data.latestSeparableDate.replaceAll("-", ".")}까지 구분 가능`
+    : "구분 가능한 원값 없음";
+  const histories = (data.cohorts || []).flatMap((cohort) => cohort.history || []);
+  $("regen-coverage").textContent = histories.length
+    ? `실제 구간 ${number.format(histories.length)}점 · 점마다 동일 플롯 비교 수 표시`
+    : "재생성 포함·제외 원값이 분리된 구간 없음";
+  $("regen-caveat").textContent = data.unseparableFrom
+    ? `${data.unseparableFrom.replaceAll("-", ".")}부터 공개 API의 재생성 포함·제외 값이 같아져 0%로 해석하지 않고 선을 중단함. 과거도 코호트 전체가 아니라 당시 두 시점에 모두 잡힌 동일 플롯만 계산함.`
+    : "같은 플롯의 두 관측점을 비교하며 누락값은 0으로 채우지 않음. 음수 증분과 공개 원값 정정은 계산에서 제외함.";
+}
+
+function drawRegenerationChart() {
+  const canvas = $("regen-chart");
+  const wrap = $("regen-chart-wrap");
+  const cohorts = (regenerationData().cohorts || [])
+    .filter((cohort) => state.regenVisible.has(cohort.size) && cohort.history?.length);
+  const allPoints = cohorts.flatMap((cohort) =>
+    cohort.history.map((point) => ({ ...point, cohortSize: cohort.size }))
+  );
+  $("regen-empty").hidden = allPoints.length > 0;
+  if (!allPoints.length) {
+    state.regenChartPoints = [];
+    const context = canvas.getContext("2d");
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const width = wrap.clientWidth;
+  const height = wrap.clientHeight;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, width, height);
+
+  const pad = { left: 58, right: 24, top: 22, bottom: 44 };
+  const plotW = Math.max(1, width - pad.left - pad.right);
+  const plotH = Math.max(1, height - pad.top - pad.bottom);
+  const dates = allPoints.map((point) => point.date).sort();
+  const firstTime = parseDay(dates[0]).getTime();
+  const lastTime = parseDay(dates[dates.length - 1]).getTime();
+  const timeSpan = Math.max(86400000, lastTime - firstTime);
+  const maxRaw = Math.max(...allPoints.map((point) => point.regenerationRatePct), 1);
+  const step = niceStep(maxRaw, 5);
+  const maxValue = Math.max(step, Math.ceil(maxRaw / step) * step);
+  const x = (date) => pad.left + ((parseDay(date).getTime() - firstTime) / timeSpan) * plotW;
+  const y = (value) => pad.top + (1 - value / maxValue) * plotH;
+
+  ctx.font = '11px "IBM Plex Sans KR", sans-serif';
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#dfe5df";
+  ctx.fillStyle = "#7c8883";
+  ctx.textBaseline = "middle";
+  for (let value = 0; value <= maxValue + step * .1; value += step) {
+    const py = y(value);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py);
+    ctx.lineTo(width - pad.right, py);
+    ctx.stroke();
+    ctx.textAlign = "right";
+    ctx.fillText(`${value.toFixed(value < 1 ? 1 : 0)}%`, pad.left - 9, py);
+  }
+
+  const visualPoints = [];
+  cohorts.forEach((cohort) => {
+    const color = regenColors[cohort.size];
+    const points = cohort.history.map((point) => ({
+      ...point,
+      cohortSize: cohort.size,
+      x: x(point.date),
+      y: y(point.regenerationRatePct),
+      color,
+    }));
+    if (points.length > 1) {
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        if (index === 0) ctx.moveTo(point.x, point.y);
+        else ctx.lineTo(point.x, point.y);
+      });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = cohort.size === 100 ? 3.2 : 2.4;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke();
+    }
+    points.forEach((point) => {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, cohort.size === 100 ? 4.5 : 3.8, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff";
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+    });
+    visualPoints.push(...points);
+  });
+
+  const labelDates = [dates[0], dates[dates.length - 1]];
+  if (width > 600 && dates.length > 2) labelDates.splice(1, 0, dates[Math.floor((dates.length - 1) / 2)]);
+  const showYear = parseDay(dates[0]).getFullYear() !== parseDay(dates[dates.length - 1]).getFullYear();
+  ctx.fillStyle = "#7c8883";
+  ctx.textBaseline = "top";
+  labelDates.forEach((date, index) => {
+    ctx.textAlign = index === 0 ? "left" : index === labelDates.length - 1 ? "right" : "center";
+    ctx.fillText(axisDate(date, showYear), x(date), height - pad.bottom + 14);
+  });
+  state.regenChartPoints = visualPoints;
 }
 
 function coreData() {
@@ -803,6 +946,8 @@ function drawChart() {
 function renderAll() {
   renderActivitySummary();
   drawActivityChart();
+  renderRegenerationSummary();
+  drawRegenerationChart();
   renderCoreSummary();
   drawCoreChart();
   renderKpis();
@@ -811,6 +956,20 @@ function renderAll() {
 }
 
 function bind() {
+  document.querySelectorAll("#regen-legend button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const cohort = Number(button.dataset.cohort);
+      if (state.regenVisible.has(cohort)) {
+        if (state.regenVisible.size === 1) return;
+        state.regenVisible.delete(cohort);
+      } else {
+        state.regenVisible.add(cohort);
+      }
+      button.classList.toggle("active", state.regenVisible.has(cohort));
+      button.setAttribute("aria-pressed", String(state.regenVisible.has(cohort)));
+      drawRegenerationChart();
+    });
+  });
   document.querySelectorAll("#period-buttons button").forEach((button) => {
     button.addEventListener("click", () => {
       document.querySelectorAll("#period-buttons button").forEach((item) => item.classList.remove("active"));
@@ -845,6 +1004,7 @@ function bind() {
   });
   window.addEventListener("resize", () => requestAnimationFrame(() => {
     drawActivityChart();
+    drawRegenerationChart();
     drawCoreChart();
     drawChart();
   }));
@@ -868,6 +1028,26 @@ function bind() {
     tip.style.top = `${Math.max(4, point.barTop - 96)}px`;
   });
   $("activity-chart").addEventListener("mouseleave", () => { $("activity-tooltip").hidden = true; });
+  $("regen-chart").addEventListener("mousemove", (event) => {
+    if (!state.regenChartPoints.length) return;
+    const rect = event.target.getBoundingClientRect();
+    const mx = event.clientX - rect.left, my = event.clientY - rect.top;
+    const nearest = state.regenChartPoints.reduce((best, point) => {
+      const distance = Math.hypot(point.x - mx, point.y - my);
+      return !best || distance < best.distance ? { point, distance } : best;
+    }, null);
+    if (!nearest || nearest.distance > 22) {
+      $("regen-tooltip").hidden = true;
+      return;
+    }
+    const point = nearest.point;
+    const tip = $("regen-tooltip");
+    tip.innerHTML = `Top ${number.format(point.cohortSize)} · ${escapeHtml(point.startDate)}→${escapeHtml(point.date)}<strong>재생성률 ${point.regenerationRatePct.toFixed(2)}%</strong><span>동일 플롯 ${number.format(point.matchedPlots)}/${number.format(point.cohortSize)}개 (${point.coveragePct.toFixed(1)}%)</span><span>재생성 ${exact(point.regenerationDelta)}회 · 재생성 포함 신규 ${exact(point.withRegenDelta)}회</span>`;
+    tip.hidden = false;
+    tip.style.left = `${Math.min(rect.width - 245, Math.max(6, point.x + 12))}px`;
+    tip.style.top = `${Math.max(4, point.y - 92)}px`;
+  });
+  $("regen-chart").addEventListener("mouseleave", () => { $("regen-tooltip").hidden = true; });
   $("core-chart").addEventListener("mousemove", (event) => {
     if (!state.coreChartPoints.length) return;
     const rect = event.target.getBoundingClientRect();

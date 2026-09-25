@@ -33,6 +33,7 @@ PANEL_VOLUME_TARGET = 1_000
 PANEL_TAIL_TARGET = 500
 HOT_REFRESH_TARGET = 500
 ROTATION_REFRESH_TARGET = 1_000
+REGEN_COHORT_MIN_MATCHED = {10: 3, 30: 5, 50: 8, 100: 10}
 
 
 def utc_now() -> datetime:
@@ -216,7 +217,7 @@ def normalize_plot(raw: dict[str, Any]) -> dict[str, Any] | None:
         "released_at": raw.get("releasedAt") or raw.get("createdAt"),
         "updated_at": raw.get("updatedAt"),
         "interaction_count": interaction,
-        "interaction_with_regen": with_regen if with_regen is not None else interaction,
+        "interaction_with_regen": with_regen,
         "tags": [str(tag).strip() for tag in tags if str(tag).strip()],
     }
 
@@ -260,7 +261,7 @@ def upsert_plot(
           updated_at=COALESCE(excluded.updated_at, plots.updated_at),
           last_seen_at=excluded.last_seen_at,
           last_interaction_count=COALESCE(excluded.last_interaction_count, plots.last_interaction_count),
-          last_interaction_with_regen=COALESCE(excluded.last_interaction_with_regen, plots.last_interaction_with_regen)
+          last_interaction_with_regen=excluded.last_interaction_with_regen
         """,
         (
             plot["plot_id"],
@@ -1186,6 +1187,155 @@ def build_core_history(db: sqlite3.Connection) -> list[dict[str, Any]]:
     return history
 
 
+def build_regeneration_cohorts(
+    plot_payloads: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build fixed latest-volume cohorts without inventing regeneration values.
+
+    A date is usable only when at least one public observation still separates
+    interactionCountWithRegen from interactionCount.  This prevents the API's
+    later equal-valued fields from being rendered as a false 0% regeneration
+    rate.  Each interval uses only the same plots at both endpoints.
+    """
+    observed_by_date: dict[str, int] = defaultdict(int)
+    distinct_by_date: dict[str, int] = defaultdict(int)
+    for plot in plot_payloads:
+        for point in plot.get("series", []):
+            chats = point.get("chats")
+            with_regen = point.get("chatsWithRegen")
+            if not isinstance(chats, int) or not isinstance(with_regen, int):
+                continue
+            day = point["date"]
+            observed_by_date[day] += 1
+            if with_regen > chats:
+                distinct_by_date[day] += 1
+
+    separable_dates = {
+        day for day, count in distinct_by_date.items() if count > 0
+    }
+    latest_observed_date = max(observed_by_date, default=None)
+    latest_separable_date = max(separable_dates, default=None)
+    unseparable_from = None
+    if latest_separable_date:
+        unseparable_from = min(
+            (
+                day
+                for day, count in observed_by_date.items()
+                if day > latest_separable_date
+                and count >= 10
+                and distinct_by_date.get(day, 0) == 0
+            ),
+            default=None,
+        )
+
+    ranked = [
+        plot for plot in plot_payloads if isinstance(plot.get("chats"), int)
+    ]
+    cohorts: list[dict[str, Any]] = []
+    for requested_size, configured_minimum in REGEN_COHORT_MIN_MATCHED.items():
+        members = ranked[:requested_size]
+        member_series: list[dict[str, tuple[int, int]]] = []
+        candidate_dates: set[str] = set()
+        for member in members:
+            values: dict[str, tuple[int, int]] = {}
+            for point in member.get("series", []):
+                day = point["date"]
+                chats = point.get("chats")
+                with_regen = point.get("chatsWithRegen")
+                if (
+                    day in separable_dates
+                    and isinstance(chats, int)
+                    and isinstance(with_regen, int)
+                ):
+                    values[day] = (chats, with_regen)
+                    candidate_dates.add(day)
+            member_series.append(values)
+
+        minimum_matched = min(configured_minimum, len(members))
+        dates = sorted(candidate_dates)
+        history: list[dict[str, Any]] = []
+        for end_index, end_date in enumerate(dates[1:], start=1):
+            for start_date in reversed(dates[:end_index]):
+                base_delta = 0
+                with_regen_delta = 0
+                regeneration_delta = 0
+                matched = 0
+                corrections = 0
+                for values in member_series:
+                    if start_date not in values or end_date not in values:
+                        continue
+                    start_chats, start_with_regen = values[start_date]
+                    end_chats, end_with_regen = values[end_date]
+                    plot_base_delta = end_chats - start_chats
+                    plot_with_regen_delta = end_with_regen - start_with_regen
+                    plot_regeneration_delta = (
+                        plot_with_regen_delta - plot_base_delta
+                    )
+                    if (
+                        plot_base_delta < 0
+                        or plot_with_regen_delta <= 0
+                        or plot_regeneration_delta < 0
+                    ):
+                        corrections += 1
+                        continue
+                    base_delta += plot_base_delta
+                    with_regen_delta += plot_with_regen_delta
+                    regeneration_delta += plot_regeneration_delta
+                    matched += 1
+                if matched < minimum_matched:
+                    continue
+                history.append(
+                    {
+                        "date": end_date,
+                        "startDate": start_date,
+                        "matchedPlots": matched,
+                        "coveragePct": round(
+                            matched / requested_size * 100, 1
+                        ) if requested_size else None,
+                        "baseDelta": base_delta,
+                        "withRegenDelta": with_regen_delta,
+                        "regenerationDelta": regeneration_delta,
+                        "regenerationRatePct": round(
+                            regeneration_delta / with_regen_delta * 100, 2
+                        ),
+                        "excludedCorrections": corrections,
+                    }
+                )
+                break
+
+        cohorts.append(
+            {
+                "size": requested_size,
+                "availablePlots": len(members),
+                "minimumMatchedPlots": minimum_matched,
+                "cutoffChats": members[-1]["chats"] if members else None,
+                "history": history,
+            }
+        )
+
+    latest_observed_pairs = (
+        observed_by_date.get(latest_observed_date, 0)
+        if latest_observed_date
+        else 0
+    )
+    latest_distinct_pairs = (
+        distinct_by_date.get(latest_observed_date, 0)
+        if latest_observed_date
+        else 0
+    )
+    return {
+        "cohortDefinition": "latestKnownCumulativeChatsFixed",
+        "formula": "deltaRegen/deltaInteractionWithRegen",
+        "latestObservedDate": latest_observed_date,
+        "latestObservedPairs": latest_observed_pairs,
+        "latestDistinctPairs": latest_distinct_pairs,
+        "latestSeparableDate": latest_separable_date,
+        "unseparableFrom": unseparable_from,
+        "currentSeparable": bool(latest_distinct_pairs),
+        "cohorts": cohorts,
+    }
+
+
 def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) -> dict[str, Any]:
     known_plots = db.execute("SELECT COUNT(*) FROM plots").fetchone()[0]
     known_tags = db.execute("SELECT COUNT(*) FROM tag_queue").fetchone()[0]
@@ -1286,6 +1436,7 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             }
         )
     plot_payloads.sort(key=lambda row: row["chats"] or -1, reverse=True)
+    regeneration_cohorts = build_regeneration_cohorts(plot_payloads)
 
     tag_stats: list[dict[str, Any]] = []
     tag_members: dict[str, list[str]] = defaultdict(list)
@@ -1396,6 +1547,7 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
         },
         "activityLatest": activity_history[-1] if activity_history else None,
         "activityHistory": activity_history,
+        "regenerationCohorts": regeneration_cohorts,
         "corePolicy": {
             "metric": "interactionCount",
             "coreThreshold": CORE_THRESHOLD,

@@ -10,6 +10,7 @@ from scripts.backfill_wayback_api import DETAIL_API, RANKING_API
 from scripts.backfill_wayback import parse_counts
 from scripts.collect import (
     build_dashboard,
+    build_regeneration_cohorts,
     connect,
     ensure_measurement_panel,
     ingest_payload,
@@ -54,6 +55,54 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(plot["interaction_count"], 100)
         self.assertEqual(plot["interaction_with_regen"], 125)
         self.assertEqual(plot["tags"], ["로맨스", "현대"])
+        without_regen = normalize_plot(
+            {key: value for key, value in SAMPLE.items() if key != "interactionCountWithRegen"}
+        )
+        self.assertIsNone(without_regen["interaction_with_regen"])
+
+    def test_regeneration_cohorts_use_fixed_top_groups_and_stop_on_equal_fields(self):
+        plots = []
+        for index in range(10):
+            plots.append(
+                {
+                    "id": f"plot-{index}",
+                    "name": f"플롯 {index}",
+                    "chats": 10_000 - index,
+                    "series": [
+                        {
+                            "date": "2026-01-01",
+                            "chats": 100 + index,
+                            "chatsWithRegen": 120 + index,
+                        },
+                        {
+                            "date": "2026-02-01",
+                            "chats": 200 + index,
+                            "chatsWithRegen": 245 + index,
+                        },
+                        {
+                            "date": "2026-03-01",
+                            "chats": 300 + index,
+                            "chatsWithRegen": 300 + index,
+                        },
+                    ],
+                }
+            )
+
+        result = build_regeneration_cohorts(plots)
+        top10 = result["cohorts"][0]
+        self.assertEqual(top10["size"], 10)
+        self.assertEqual(top10["availablePlots"], 10)
+        self.assertEqual(len(top10["history"]), 1)
+        point = top10["history"][0]
+        self.assertEqual(point["startDate"], "2026-01-01")
+        self.assertEqual(point["date"], "2026-02-01")
+        self.assertEqual(point["matchedPlots"], 10)
+        self.assertEqual(point["regenerationDelta"], 250)
+        self.assertEqual(point["withRegenDelta"], 1_250)
+        self.assertEqual(point["regenerationRatePct"], 20.0)
+        self.assertEqual(result["latestSeparableDate"], "2026-02-01")
+        self.assertEqual(result["unseparableFrom"], "2026-03-01")
+        self.assertFalse(result["currentSeparable"])
 
     def test_same_day_same_source_is_idempotent(self):
         self.ingest(SAMPLE, "2026-09-23")

@@ -75,6 +75,40 @@
       <p class="activity-caveat">앱 전체 이용자 수가 아니라 공개 플롯 고정 패널의 채팅 생성 속도임. 패널 밖 신규 히트와 늦게 발견한 플롯은 아래에서 별도로 확인함.</p>
     </section>
 
+    <section class="panel regen-panel" aria-labelledby="regen-title">
+      <div class="panel-head">
+        <div>
+          <p class="section-kicker">REGENERATION MIX</p>
+          <h2 id="regen-title">상위 플롯 재생성률</h2>
+          <p class="annotation">최신 누적 대화량 Top 10·30·50·100 고정 코호트 · 구간 신규 생성 중 재생성이 차지한 비율</p>
+        </div>
+        <div class="chart-summary" id="regen-summary">데이터 불러오는 중</div>
+      </div>
+
+      <div class="regen-kpi-grid" aria-label="상위 플롯 코호트별 최근 재생성률">
+        <article><p>Top 10</p><strong id="regen-rate-10">—</strong><small id="regen-note-10">복원 구간 확인 중</small></article>
+        <article><p>Top 30</p><strong id="regen-rate-30">—</strong><small id="regen-note-30">복원 구간 확인 중</small></article>
+        <article><p>Top 50</p><strong id="regen-rate-50">—</strong><small id="regen-note-50">복원 구간 확인 중</small></article>
+        <article><p>Top 100</p><strong id="regen-rate-100">—</strong><small id="regen-note-100">복원 구간 확인 중</small></article>
+      </div>
+
+      <div class="regen-chart-meta">
+        <div class="regen-legend" id="regen-legend" aria-label="재생성률 코호트 표시 선택">
+          <button class="active cohort-10" data-cohort="10" aria-pressed="true"><i></i>Top 10</button>
+          <button class="active cohort-30" data-cohort="30" aria-pressed="true"><i></i>Top 30</button>
+          <button class="active cohort-50" data-cohort="50" aria-pressed="true"><i></i>Top 50</button>
+          <button class="active cohort-100" data-cohort="100" aria-pressed="true"><i></i>Top 100</button>
+        </div>
+        <p id="regen-coverage">과거 동일 플롯 비교 범위 확인 중</p>
+      </div>
+      <div class="regen-chart-wrap" id="regen-chart-wrap">
+        <canvas id="regen-chart" aria-label="누적 대화량 상위 플롯 코호트별 재생성률 추이"></canvas>
+        <div class="tooltip" id="regen-tooltip" hidden></div>
+        <div class="empty-state" id="regen-empty" hidden>재생성 포함·제외 원값이 분리된 비교 구간이 없음.</div>
+      </div>
+      <p class="regen-caveat" id="regen-caveat">같은 플롯의 두 관측점을 비교하며 누락값은 0으로 채우지 않음.</p>
+    </section>
+
     <section class="panel core-panel" aria-labelledby="core-title">
       <div class="panel-head">
         <div>
