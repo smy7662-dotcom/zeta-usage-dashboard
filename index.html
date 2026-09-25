@@ -27,6 +27,54 @@
       </div>
     </header>
 
+    <section class="panel core-panel" aria-labelledby="core-title">
+      <div class="panel-head">
+        <div>
+          <p class="section-kicker">CORE INVENTORY</p>
+          <h2 id="core-title">누적 대화 100만+ 플롯</h2>
+          <p class="annotation">막대 = 기준 이상 플롯 수 · 선 = 해당 플롯들의 누적 대화량 합계</p>
+        </div>
+        <div class="chart-summary" id="core-summary">데이터 불러오는 중</div>
+      </div>
+
+      <div class="core-kpi-grid" aria-label="100만 이상 핵심 지표">
+        <article>
+          <p>100만+ 핵심 플롯</p>
+          <strong id="core-count">—</strong>
+          <small id="core-count-note">누적 대화량 기준</small>
+        </article>
+        <article>
+          <p>핵심 플롯 합산 대화량</p>
+          <strong id="core-chats">—</strong>
+          <small id="core-chats-note">재생성 제외 누적값</small>
+        </article>
+        <article>
+          <p>50만~100만 후보</p>
+          <strong id="watch-count">—</strong>
+          <small id="watch-count-note">다음 핵심 진입 후보</small>
+        </article>
+        <article>
+          <p>최근 핵심 진입</p>
+          <strong id="core-entrants">—</strong>
+          <small id="core-entrants-note">실제 돌파 · 늦게 발견 구분</small>
+        </article>
+      </div>
+
+      <div class="core-chart-meta">
+        <div class="core-legend" aria-label="차트 범례">
+          <span><i class="legend-bar" aria-hidden="true"></i>100만+ 플롯 수</span>
+          <span><i class="legend-line" aria-hidden="true"></i>합산 누적 대화량</span>
+        </div>
+        <p id="core-coverage">당일 갱신 범위 확인 중</p>
+      </div>
+      <div class="core-chart-wrap" id="core-chart-wrap">
+        <canvas id="core-chart" aria-label="100만 이상 플롯 수와 합산 누적 대화량 시계열"></canvas>
+        <div class="tooltip" id="core-tooltip" hidden></div>
+        <div class="empty-state" id="core-empty" hidden>100만 이상 핵심 플롯 관측값이 아직 없음.</div>
+      </div>
+      <p class="core-caveat">플롯별 마지막 공개 원값을 사용함. 오늘 처음 발견했지만 이미 100만 회 이상인 플롯은 실제 신규 돌파와 분리함.</p>
+    </section>
+
     <section class="control-bar" aria-label="조회 조건">
       <div class="control-group">
         <span class="control-label">기간</span>

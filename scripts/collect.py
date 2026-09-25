@@ -26,6 +26,8 @@ API = "https://api.zeta-ai.io"
 USER_AGENT = "zeta-usage-observatory/1.0"
 KST = timezone(timedelta(hours=9))
 RANKING_TYPES = ("GLOBAL", "REALTIME", "DAILY", "WEEKLY", "MONTHLY")
+CORE_THRESHOLD = 1_000_000
+WATCH_THRESHOLD = 500_000
 
 
 def utc_now() -> datetime:
@@ -516,7 +518,7 @@ def refresh_known_plots(
     workers: int,
     errors: list[str],
 ) -> int:
-    """오래 관측하지 못한 기존 플롯부터 상세 API로 일별 원값을 갱신함."""
+    """핵심·후보 집단을 먼저, 나머지는 오래 미관측한 순서로 갱신함."""
     if limit <= 0:
         return 0
     observed_at, observed_date = iso_z(now), kst_day(now)
@@ -524,7 +526,12 @@ def refresh_known_plots(
         """
         SELECT p.plot_id
         FROM plots p
-        ORDER BY EXISTS (
+        ORDER BY CASE
+                   WHEN COALESCE(p.last_interaction_count, 0) >= ? THEN 0
+                   WHEN COALESCE(p.last_interaction_count, 0) >= ? THEN 1
+                   ELSE 2
+                 END,
+                 EXISTS (
                    SELECT 1 FROM plot_observations h
                    WHERE h.plot_id=p.plot_id AND h.source LIKE 'wayback%'
                  ) DESC,
@@ -532,7 +539,7 @@ def refresh_known_plots(
                  COALESCE(p.last_interaction_count, 0) DESC
         LIMIT ?
         """,
-        (limit,),
+        (CORE_THRESHOLD, WATCH_THRESHOLD, limit),
     ).fetchall()
 
     def fetch(plot_id: str) -> tuple[str, str, Any]:
@@ -785,6 +792,83 @@ def build_matched_growth_history(
     return history
 
 
+def build_core_history(db: sqlite3.Connection) -> list[dict[str, Any]]:
+    """현재 API 관측만으로 100만+ 핵심 플롯 재고의 날짜별 스냅샷을 만듦.
+
+    각 날짜 값은 그날까지 확보한 플롯별 최신 원값을 한 번씩만 사용함. 당일에
+    실제로 다시 읽은 핵심 플롯 비율을 함께 내보내 오래된 값이 섞인 정도를 숨기지
+    않으며, 기존 관측값이 100만 미만이었다가 넘은 플롯과 처음 발견할 때부터
+    100만 이상이었던 플롯을 분리함.
+    """
+    rows = db.execute(
+        """
+        SELECT *
+        FROM plot_observations
+        WHERE source NOT LIKE 'wayback%'
+          AND interaction_count IS NOT NULL
+        ORDER BY observed_date, observed_at
+        """
+    ).fetchall()
+    by_day: dict[str, dict[str, sqlite3.Row]] = defaultdict(dict)
+    for row in rows:
+        current = by_day[row["observed_date"]].get(row["plot_id"])
+        by_day[row["observed_date"]][row["plot_id"]] = prefer_observation(
+            current, row
+        )
+
+    snapshot: dict[str, sqlite3.Row] = {}
+    previous_core: set[str] = set()
+    history: list[dict[str, Any]] = []
+    for day in sorted(by_day):
+        previous_values_by_plot = {
+            plot_id: row["interaction_count"] for plot_id, row in snapshot.items()
+        }
+        snapshot.update(by_day[day])
+        core_ids = {
+            plot_id
+            for plot_id, row in snapshot.items()
+            if row["interaction_count"] >= CORE_THRESHOLD
+        }
+        watch_ids = {
+            plot_id
+            for plot_id, row in snapshot.items()
+            if WATCH_THRESHOLD <= row["interaction_count"] < CORE_THRESHOLD
+        }
+        entrants = core_ids - previous_core
+        crossed = sum(
+            plot_id in previous_values_by_plot
+            and previous_values_by_plot[plot_id] < CORE_THRESHOLD
+            for plot_id in entrants
+        )
+        discovered = sum(plot_id not in previous_values_by_plot for plot_id in entrants)
+        refreshed_core = sum(
+            snapshot[plot_id]["observed_date"] == day for plot_id in core_ids
+        )
+        core_count = len(core_ids)
+        history.append(
+            {
+                "date": day,
+                "corePlotCount": core_count,
+                "coreTotalChats": sum(
+                    snapshot[plot_id]["interaction_count"] for plot_id in core_ids
+                ),
+                "watchPlotCount": len(watch_ids),
+                "watchTotalChats": sum(
+                    snapshot[plot_id]["interaction_count"] for plot_id in watch_ids
+                ),
+                "observedPlots": len(by_day[day]),
+                "refreshedCorePlots": refreshed_core,
+                "coreCoveragePct": round(
+                    refreshed_core / core_count * 100, 1
+                ) if core_count else None,
+                "crossedCoreCount": crossed,
+                "discoveredCoreCount": discovered,
+            }
+        )
+        previous_core = core_ids
+    return history
+
+
 def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) -> dict[str, Any]:
     known_plots = db.execute("SELECT COUNT(*) FROM plots").fetchone()[0]
     known_tags = db.execute("SELECT COUNT(*) FROM tag_queue").fetchone()[0]
@@ -936,6 +1020,8 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
         if row["latest_comment_count"] is not None
     ]
     homepage_history = build_homepage_history(db)
+    core_history = build_core_history(db)
+    core_inventory = core_history[-1] if core_history else None
     payload = {
         "schemaVersion": 1,
         "updatedAt": iso_z(utc_now()),
@@ -957,6 +1043,14 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             ).fetchone()[0],
         },
         "platformHistory": platform_history,
+        "corePolicy": {
+            "metric": "interactionCount",
+            "coreThreshold": CORE_THRESHOLD,
+            "watchThreshold": WATCH_THRESHOLD,
+            "definition": "latestKnownInventory",
+        },
+        "coreInventory": core_inventory,
+        "coreHistory": core_history,
         "homepageHistory": homepage_history,
         "matchedGrowthHistory": build_matched_growth_history(db, homepage_history),
         "plots": plot_payloads,

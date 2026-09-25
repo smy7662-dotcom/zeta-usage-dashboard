@@ -9,6 +9,7 @@ const state = {
   chartablePlots: [],
   detailPlotId: null,
   chartPoints: [],
+  coreChartPoints: [],
 };
 
 const metricLabels = {
@@ -113,6 +114,187 @@ function plotChanges() {
     const comparison = pair(plot.series, "chats");
     return { ...plot, comparison, delta: comparison?.delta ?? null };
   });
+}
+
+function coreData() {
+  if (state.data.coreHistory?.length) {
+    return {
+      history: state.data.coreHistory,
+      latest: state.data.coreInventory || state.data.coreHistory[state.data.coreHistory.length - 1],
+    };
+  }
+  const policy = state.data.corePolicy || { coreThreshold: 1000000, watchThreshold: 500000 };
+  const available = (state.data.plots || []).filter((plot) => Number.isFinite(plot.chats));
+  const core = available.filter((plot) => plot.chats >= policy.coreThreshold);
+  const watch = available.filter((plot) => plot.chats >= policy.watchThreshold && plot.chats < policy.coreThreshold);
+  if (!available.length) return { history: [], latest: null };
+  const latest = {
+    date: state.data.latestDate,
+    corePlotCount: core.length,
+    coreTotalChats: core.reduce((sum, plot) => sum + plot.chats, 0),
+    watchPlotCount: watch.length,
+    watchTotalChats: watch.reduce((sum, plot) => sum + plot.chats, 0),
+    observedPlots: available.length,
+    refreshedCorePlots: 0,
+    coreCoveragePct: null,
+    crossedCoreCount: 0,
+    discoveredCoreCount: 0,
+  };
+  return { history: [latest], latest };
+}
+
+function renderCoreSummary() {
+  const { latest } = coreData();
+  const policy = state.data.corePolicy || { coreThreshold: 1000000, watchThreshold: 500000 };
+  if (!latest) {
+    $("core-count").textContent = "—";
+    $("core-chats").textContent = "—";
+    $("watch-count").textContent = "—";
+    $("core-entrants").textContent = "—";
+    $("core-summary").textContent = "기준선 대기";
+    $("core-coverage").textContent = "당일 갱신 범위 없음";
+    return;
+  }
+
+  const entrants = (latest.crossedCoreCount || 0) + (latest.discoveredCoreCount || 0);
+  $("core-count").textContent = `${number.format(latest.corePlotCount)}개`;
+  $("core-count").title = `${number.format(latest.corePlotCount)}개`;
+  $("core-count-note").textContent = `${compact(policy.coreThreshold)}회 이상 · 최신 확보값`;
+  $("core-chats").textContent = compact(latest.coreTotalChats);
+  $("core-chats").title = `${exact(latest.coreTotalChats)}회`;
+  $("core-chats-note").textContent = `정확히 ${exact(latest.coreTotalChats)}회`;
+  $("watch-count").textContent = `${number.format(latest.watchPlotCount)}개`;
+  $("watch-count-note").textContent = `${compact(policy.watchThreshold)}~${compact(policy.coreThreshold)}회 미만`;
+  $("core-entrants").textContent = `${number.format(entrants)}개`;
+  $("core-entrants-note").textContent = `실제 돌파 ${number.format(latest.crossedCoreCount || 0)} · 늦게 발견 ${number.format(latest.discoveredCoreCount || 0)}`;
+  $("core-summary").textContent = `${latest.date} 최신 확보값`;
+  $("core-coverage").textContent = latest.coreCoveragePct == null
+    ? "당일 갱신 범위 없음"
+    : `당일 핵심 재조회 ${number.format(latest.refreshedCorePlots)}/${number.format(latest.corePlotCount)}개 · ${latest.coreCoveragePct.toFixed(1)}%`;
+}
+
+function drawCoreChart() {
+  const canvas = $("core-chart");
+  const wrap = $("core-chart-wrap");
+  const points = coreData().history;
+  $("core-empty").hidden = points.length > 0;
+  if (!points.length) {
+    state.coreChartPoints = [];
+    return;
+  }
+
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const width = wrap.clientWidth;
+  const height = wrap.clientHeight;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, width, height);
+
+  const pad = { left: 58, right: 72, top: 20, bottom: 42 };
+  const plotW = Math.max(1, width - pad.left - pad.right);
+  const plotH = Math.max(1, height - pad.top - pad.bottom);
+  const countMaxRaw = Math.max(...points.map((point) => point.corePlotCount), 1);
+  const countStep = niceStep(countMaxRaw, 5);
+  const countMax = Math.ceil(countMaxRaw / countStep) * countStep;
+  const chatValues = points.map((point) => point.coreTotalChats);
+  let chatMin = Math.min(...chatValues);
+  let chatMax = Math.max(...chatValues);
+  if (chatMin === chatMax) {
+    const margin = Math.max(1, chatMax * .05);
+    chatMin = Math.max(0, chatMin - margin);
+    chatMax += margin;
+  } else {
+    const margin = (chatMax - chatMin) * .12;
+    chatMin = Math.max(0, chatMin - margin);
+    chatMax += margin;
+  }
+
+  const firstTime = parseDay(points[0].date).getTime();
+  const lastTime = parseDay(points[points.length - 1].date).getTime();
+  const timeSpan = Math.max(86400000, lastTime - firstTime);
+  const x = (date) => pad.left + ((parseDay(date).getTime() - firstTime) / timeSpan) * plotW;
+  const yCount = (value) => pad.top + (1 - value / countMax) * plotH;
+  const yChats = (value) => pad.top + (1 - (value - chatMin) / Math.max(1, chatMax - chatMin)) * plotH;
+
+  ctx.font = '11px "IBM Plex Sans KR", sans-serif';
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#dfe5df";
+  ctx.fillStyle = "#7c8883";
+  ctx.textBaseline = "middle";
+  for (let value = 0; value <= countMax + countStep * .1; value += countStep) {
+    const py = yCount(value);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py);
+    ctx.lineTo(width - pad.right, py);
+    ctx.stroke();
+    ctx.textAlign = "right";
+    ctx.fillText(number.format(value), pad.left - 9, py);
+  }
+  ctx.textAlign = "left";
+  for (let index = 0; index <= 4; index += 1) {
+    const value = chatMin + ((chatMax - chatMin) * index) / 4;
+    ctx.fillText(compact(Math.round(value)), width - pad.right + 9, yChats(value));
+  }
+
+  const barWidth = Math.min(42, Math.max(8, plotW / Math.max(points.length, 1) * .48));
+  const barX = (point, index) => {
+    const px = x(point.date);
+    if (index === 0) return Math.max(pad.left + barWidth / 2, px);
+    if (index === points.length - 1) return Math.min(width - pad.right - barWidth / 2, px);
+    return px;
+  };
+  const visualPoints = points.map((point, index) => {
+    const px = barX(point, index);
+    const top = yCount(point.corePlotCount);
+    ctx.fillStyle = point.coreCoveragePct != null && point.coreCoveragePct < 95
+      ? "rgba(56,111,229,.42)"
+      : "rgba(56,111,229,.75)";
+    ctx.fillRect(px - barWidth / 2, top, barWidth, pad.top + plotH - top);
+    return {
+      ...point,
+      x: px,
+      lineY: yChats(point.coreTotalChats),
+      barLeft: px - barWidth / 2,
+      barRight: px + barWidth / 2,
+      barTop: top,
+    };
+  });
+
+  if (visualPoints.length > 1) {
+    ctx.beginPath();
+    visualPoints.forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.lineY);
+      else ctx.lineTo(point.x, point.lineY);
+    });
+    ctx.strokeStyle = "#e87553";
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.stroke();
+  }
+  visualPoints.forEach((point) => {
+    ctx.beginPath();
+    ctx.arc(point.x, point.lineY, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff";
+    ctx.fill();
+    ctx.strokeStyle = "#e87553";
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  });
+
+  const labelIndexes = new Set([0, points.length - 1]);
+  if (width > 600 && points.length > 2) labelIndexes.add(Math.floor((points.length - 1) / 2));
+  const showYear = parseDay(points[0].date).getFullYear() !== parseDay(points[points.length - 1].date).getFullYear();
+  ctx.fillStyle = "#7c8883";
+  ctx.textBaseline = "top";
+  visualPoints.forEach((point, index) => {
+    if (!labelIndexes.has(index)) return;
+    ctx.textAlign = index === 0 ? "left" : index === points.length - 1 ? "right" : "center";
+    ctx.fillText(axisDate(point.date, showYear), point.x, height - pad.bottom + 14);
+  });
+  state.coreChartPoints = visualPoints;
 }
 
 function renderKpis() {
@@ -434,6 +616,8 @@ function drawChart() {
 }
 
 function renderAll() {
+  renderCoreSummary();
+  drawCoreChart();
   renderKpis();
   renderTable();
   drawChart();
@@ -472,7 +656,30 @@ function bind() {
   $("detail-chart-button").addEventListener("click", () => {
     if (state.detailPlotId) showPlotChart(state.detailPlotId);
   });
-  window.addEventListener("resize", () => requestAnimationFrame(drawChart));
+  window.addEventListener("resize", () => requestAnimationFrame(() => {
+    drawCoreChart();
+    drawChart();
+  }));
+  $("core-chart").addEventListener("mousemove", (event) => {
+    if (!state.coreChartPoints.length) return;
+    const rect = event.target.getBoundingClientRect();
+    const mx = event.clientX - rect.left;
+    const nearest = state.coreChartPoints.reduce((best, point) => {
+      const distance = Math.abs(point.x - mx);
+      return !best || distance < best.distance ? { point, distance } : best;
+    }, null);
+    if (!nearest || nearest.distance > 34) {
+      $("core-tooltip").hidden = true;
+      return;
+    }
+    const point = nearest.point;
+    const tip = $("core-tooltip");
+    tip.innerHTML = `${escapeHtml(point.date)}<strong>${number.format(point.corePlotCount)}개 · ${exact(point.coreTotalChats)}회</strong><span>당일 재조회 ${number.format(point.refreshedCorePlots)}개 (${point.coreCoveragePct == null ? "—" : `${point.coreCoveragePct.toFixed(1)}%`})</span><span>실제 돌파 ${number.format(point.crossedCoreCount || 0)} · 늦게 발견 ${number.format(point.discoveredCoreCount || 0)}</span>`;
+    tip.hidden = false;
+    tip.style.left = `${Math.min(rect.width - 230, Math.max(6, point.x + 12))}px`;
+    tip.style.top = `${Math.max(4, point.lineY - 82)}px`;
+  });
+  $("core-chart").addEventListener("mouseleave", () => { $("core-tooltip").hidden = true; });
   $("history-chart").addEventListener("mousemove", (event) => {
     if (!state.chartPoints.length) return;
     const rect = event.target.getBoundingClientRect();

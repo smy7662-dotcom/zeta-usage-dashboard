@@ -178,6 +178,64 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertTrue(request.call_args.args[0].endswith("/v1/plots/historical"))
 
+    def test_refresh_prioritizes_core_then_watchlist(self):
+        self.ingest(dict(SAMPLE, id="ordinary", interactionCount=100_000), "2026-09-20")
+        self.ingest(dict(SAMPLE, id="watch", interactionCount=750_000), "2026-09-20")
+        self.ingest(dict(SAMPLE, id="core", interactionCount=1_500_000), "2026-09-20")
+
+        requested = []
+
+        def response(url, attempts=2):
+            plot_id = url.rsplit("/", 1)[-1]
+            requested.append(plot_id)
+            value = {"core": 1_500_100, "watch": 750_100}[plot_id]
+            return dict(SAMPLE, id=plot_id, interactionCount=value)
+
+        with patch("scripts.collect.request_json", side_effect=response):
+            count = refresh_known_plots(
+                self.db,
+                datetime(2026, 9, 23, tzinfo=timezone.utc),
+                limit=2,
+                workers=1,
+                errors=[],
+            )
+        self.assertEqual(count, 2)
+        self.assertEqual(requested, ["core", "watch"])
+
+    def test_core_history_tracks_inventory_crossing_and_discovery(self):
+        self.ingest(
+            dict(SAMPLE, id="crosses", interactionCount=900_000),
+            "2026-09-24",
+        )
+        self.ingest(
+            dict(SAMPLE, id="existing-core", interactionCount=1_200_000),
+            "2026-09-24",
+        )
+        self.ingest(
+            dict(SAMPLE, id="crosses", interactionCount=1_100_000),
+            "2026-09-25",
+        )
+        self.ingest(
+            dict(SAMPLE, id="existing-core", interactionCount=1_300_000),
+            "2026-09-25",
+        )
+        self.ingest(
+            dict(SAMPLE, id="new-core", interactionCount=2_000_000),
+            "2026-09-25",
+        )
+
+        payload = build_dashboard(self.db, self.root / "out-core", [])
+        history = payload["coreHistory"]
+        self.assertEqual(history[0]["corePlotCount"], 1)
+        self.assertEqual(history[0]["coreTotalChats"], 1_200_000)
+        self.assertEqual(history[1]["corePlotCount"], 3)
+        self.assertEqual(history[1]["coreTotalChats"], 4_400_000)
+        self.assertEqual(history[1]["crossedCoreCount"], 1)
+        self.assertEqual(history[1]["discoveredCoreCount"], 1)
+        self.assertEqual(history[1]["refreshedCorePlots"], 3)
+        self.assertEqual(history[1]["coreCoveragePct"], 100.0)
+        self.assertEqual(payload["coreInventory"], history[-1])
+
 
 if __name__ == "__main__":
     unittest.main()
