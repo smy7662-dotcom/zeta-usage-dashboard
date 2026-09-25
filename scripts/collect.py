@@ -28,6 +28,11 @@ KST = timezone(timedelta(hours=9))
 RANKING_TYPES = ("GLOBAL", "REALTIME", "DAILY", "WEEKLY", "MONTHLY")
 CORE_THRESHOLD = 1_000_000
 WATCH_THRESHOLD = 500_000
+PANEL_TARGET = 1_500
+PANEL_VOLUME_TARGET = 1_000
+PANEL_TAIL_TARGET = 500
+HOT_REFRESH_TARGET = 500
+ROTATION_REFRESH_TARGET = 1_000
 
 
 def utc_now() -> datetime:
@@ -157,12 +162,23 @@ def initialize(db: sqlite3.Connection) -> None:
           source_url TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS measurement_panel (
+          plot_id TEXT PRIMARY KEY,
+          segment TEXT NOT NULL,
+          selected_at TEXT NOT NULL,
+          selected_date TEXT NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1,
+          FOREIGN KEY (plot_id) REFERENCES plots(plot_id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_observations_date
           ON plot_observations(observed_date);
         CREATE INDEX IF NOT EXISTS idx_observations_plot_date
           ON plot_observations(plot_id, observed_date);
         CREATE INDEX IF NOT EXISTS idx_plot_tags_tag
           ON plot_tags(tag, plot_id);
+        CREATE INDEX IF NOT EXISTS idx_measurement_panel_active
+          ON measurement_panel(active, segment, plot_id);
         """
     )
     db.commit()
@@ -510,6 +526,169 @@ def collect_comments(
     return completed
 
 
+def ensure_measurement_panel(
+    db: sqlite3.Connection,
+    now: datetime,
+    *,
+    target_size: int = PANEL_TARGET,
+    volume_target: int = PANEL_VOLUME_TARGET,
+) -> int:
+    """최초 한 번 고정 측정 패널을 만들고 이후 실행에서는 그대로 유지함."""
+    existing = db.execute(
+        "SELECT COUNT(*) FROM measurement_panel WHERE active=1"
+    ).fetchone()[0]
+    if existing or target_size <= 0:
+        return existing
+
+    selected_at, selected_date = iso_z(now), kst_day(now)
+    volume_limit = min(target_size, max(0, volume_target))
+    volume_rows = db.execute(
+        """
+        SELECT plot_id
+        FROM plots
+        WHERE last_interaction_count IS NOT NULL
+        ORDER BY last_interaction_count DESC, plot_id
+        LIMIT ?
+        """,
+        (volume_limit,),
+    ).fetchall()
+    for row in volume_rows:
+        db.execute(
+            """
+            INSERT OR IGNORE INTO measurement_panel (
+              plot_id, segment, selected_at, selected_date
+            ) VALUES (?, 'volume', ?, ?)
+            """,
+            (row["plot_id"], selected_at, selected_date),
+        )
+
+    remaining = max(0, target_size - len(volume_rows))
+    if remaining:
+        candidates = db.execute(
+            """
+            SELECT p.plot_id, COALESCE(p.last_interaction_count, 0) AS chats
+            FROM plots p
+            WHERE NOT EXISTS (
+              SELECT 1 FROM measurement_panel m WHERE m.plot_id=p.plot_id
+            )
+            ORDER BY p.plot_id
+            """
+        ).fetchall()
+        buckets: dict[str, list[sqlite3.Row]] = {
+            "mid": [],
+            "long": [],
+            "micro": [],
+        }
+        for row in candidates:
+            if row["chats"] >= 100_000:
+                buckets["mid"].append(row)
+            elif row["chats"] >= 10_000:
+                buckets["long"].append(row)
+            else:
+                buckets["micro"].append(row)
+
+        indexes = {name: 0 for name in buckets}
+        chosen: list[tuple[sqlite3.Row, str]] = []
+        while len(chosen) < remaining:
+            added = False
+            for name in ("mid", "long", "micro"):
+                index = indexes[name]
+                if index >= len(buckets[name]):
+                    continue
+                chosen.append((buckets[name][index], name))
+                indexes[name] += 1
+                added = True
+                if len(chosen) >= remaining:
+                    break
+            if not added:
+                break
+        for row, bucket in chosen:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO measurement_panel (
+                  plot_id, segment, selected_at, selected_date
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (row["plot_id"], f"tail:{bucket}", selected_at, selected_date),
+            )
+    db.commit()
+    return db.execute(
+        "SELECT COUNT(*) FROM measurement_panel WHERE active=1"
+    ).fetchone()[0]
+
+
+def select_refresh_targets(
+    db: sqlite3.Connection,
+    now: datetime,
+    *,
+    limit: int,
+    hot_limit: int = HOT_REFRESH_TARGET,
+) -> list[str]:
+    """고정 패널 → 신규·급상승 → 오래 미관측 순환 표본을 고름."""
+    if limit <= 0:
+        return []
+    fixed_rows = db.execute(
+        """
+        SELECT p.plot_id
+        FROM measurement_panel m
+        JOIN plots p ON p.plot_id=m.plot_id
+        WHERE m.active=1
+        ORDER BY CASE WHEN m.segment='volume' THEN 0 ELSE 1 END,
+                 COALESCE(p.last_interaction_count, 0) DESC,
+                 p.plot_id
+        """
+    ).fetchall()
+    targets = [row["plot_id"] for row in fixed_rows[:limit]]
+    selected = set(targets)
+    remaining_budget = limit - len(targets)
+    if remaining_budget <= 0:
+        return targets
+
+    rows = db.execute(
+        """
+        SELECT p.plot_id, p.first_seen_at,
+               COALESCE(p.last_interaction_count, 0) AS chats,
+               COALESCE((
+                 SELECT MAX(o.observed_date)
+                 FROM plot_observations o
+                 WHERE o.plot_id=p.plot_id AND o.source='detail'
+               ), '') AS last_detail_date
+        FROM plots p
+        WHERE NOT EXISTS (
+          SELECT 1 FROM measurement_panel m
+          WHERE m.plot_id=p.plot_id AND m.active=1
+        )
+        """
+    ).fetchall()
+    recent_cutoff = iso_z(now - timedelta(days=2))
+    hot_rows = sorted(
+        rows,
+        key=lambda row: (
+            0 if row["chats"] >= WATCH_THRESHOLD else
+            1 if row["first_seen_at"] >= recent_cutoff else 2,
+            -row["chats"],
+            row["plot_id"],
+        ),
+    )
+    for row in hot_rows[: min(hot_limit, remaining_budget)]:
+        targets.append(row["plot_id"])
+        selected.add(row["plot_id"])
+    remaining_budget = limit - len(targets)
+    if remaining_budget <= 0:
+        return targets
+
+    rotation_rows = sorted(
+        (row for row in rows if row["plot_id"] not in selected),
+        key=lambda row: (
+            row["last_detail_date"],
+            -row["chats"],
+            row["plot_id"],
+        ),
+    )
+    targets.extend(row["plot_id"] for row in rotation_rows[:remaining_budget])
+    return targets
+
+
 def refresh_known_plots(
     db: sqlite3.Connection,
     now: datetime,
@@ -518,29 +697,12 @@ def refresh_known_plots(
     workers: int,
     errors: list[str],
 ) -> int:
-    """핵심·후보 집단을 먼저, 나머지는 오래 미관측한 순서로 갱신함."""
+    """고정 측정 패널·신규 급상승·순환 표본 순서로 상세 원값을 갱신함."""
     if limit <= 0:
         return 0
     observed_at, observed_date = iso_z(now), kst_day(now)
-    rows = db.execute(
-        """
-        SELECT p.plot_id
-        FROM plots p
-        ORDER BY CASE
-                   WHEN COALESCE(p.last_interaction_count, 0) >= ? THEN 0
-                   WHEN COALESCE(p.last_interaction_count, 0) >= ? THEN 1
-                   ELSE 2
-                 END,
-                 EXISTS (
-                   SELECT 1 FROM plot_observations h
-                   WHERE h.plot_id=p.plot_id AND h.source LIKE 'wayback%'
-                 ) DESC,
-                 p.last_seen_at,
-                 COALESCE(p.last_interaction_count, 0) DESC
-        LIMIT ?
-        """,
-        (CORE_THRESHOLD, WATCH_THRESHOLD, limit),
-    ).fetchall()
+    ensure_measurement_panel(db, now)
+    plot_ids = select_refresh_targets(db, now, limit=limit)
 
     def fetch(plot_id: str) -> tuple[str, str, Any]:
         url = f"{API}/v1/plots/{plot_id}"
@@ -548,7 +710,7 @@ def refresh_known_plots(
 
     completed = 0
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = {pool.submit(fetch, row["plot_id"]): row["plot_id"] for row in rows}
+        futures = {pool.submit(fetch, plot_id): plot_id for plot_id in plot_ids}
         for future in as_completed(futures):
             plot_id = futures[future]
             try:
@@ -794,6 +956,159 @@ def build_matched_growth_history(
     return history
 
 
+def build_activity_history(db: sqlite3.Connection) -> list[dict[str, Any]]:
+    """고정 패널의 연속 일일 상세 관측으로 채팅 활동 속도를 계산함."""
+    panel_size = db.execute(
+        "SELECT COUNT(*) FROM measurement_panel WHERE active=1"
+    ).fetchone()[0]
+    if not panel_size:
+        return []
+    rows = db.execute(
+        """
+        SELECT o.*
+        FROM plot_observations o
+        JOIN measurement_panel m ON m.plot_id=o.plot_id AND m.active=1
+        WHERE o.source='detail'
+          AND o.interaction_count IS NOT NULL
+          AND o.observed_date >= m.selected_date
+        ORDER BY o.observed_date, o.plot_id
+        """
+    ).fetchall()
+    by_day: dict[str, dict[str, sqlite3.Row]] = defaultdict(dict)
+    for row in rows:
+        by_day[row["observed_date"]][row["plot_id"]] = row
+
+    history: list[dict[str, Any]] = []
+    for day in sorted(by_day):
+        previous_day = (
+            datetime.strptime(day, "%Y-%m-%d").date() - timedelta(days=1)
+        ).isoformat()
+        current = by_day[day]
+        previous = by_day.get(previous_day, {})
+        matched_ids = current.keys() & previous.keys()
+        raw_deltas = [
+            current[plot_id]["interaction_count"]
+            - previous[plot_id]["interaction_count"]
+            for plot_id in matched_ids
+        ]
+        valid_deltas = [value for value in raw_deltas if value >= 0]
+        positive = [value for value in valid_deltas if value > 0]
+        current_values = [row["interaction_count"] for row in current.values()]
+        total = sum(valid_deltas)
+        top10 = sum(sorted(positive, reverse=True)[:10])
+        point: dict[str, Any] = {
+            "date": day,
+            "panelSize": panel_size,
+            "observedPanelPlots": len(current),
+            "panelCoveragePct": round(len(current) / panel_size * 100, 1),
+            "matchedPlots": len(matched_ids),
+            "comparisonCoveragePct": round(len(matched_ids) / panel_size * 100, 1),
+            "validDeltaPlots": len(valid_deltas),
+            "negativeCorrections": len(raw_deltas) - len(valid_deltas),
+            "panelTotalChats": sum(current_values) if current_values else None,
+            "averageCumulativeChatsPerPlot": round(statistics.mean(current_values))
+            if current_values else None,
+            "medianCumulativeChatsPerPlot": round(statistics.median(current_values))
+            if current_values else None,
+            "totalNewChats": total if valid_deltas else None,
+            "averageNewChatsPerPlot": round(statistics.mean(valid_deltas))
+            if valid_deltas else None,
+            "medianNewChatsPerPlot": round(statistics.median(valid_deltas))
+            if valid_deltas else None,
+            "activePlots": len(positive),
+            "activeSharePct": round(len(positive) / len(valid_deltas) * 100, 1)
+            if valid_deltas else None,
+            "top10ContributionPct": round(top10 / total * 100, 1)
+            if total else None,
+            "sevenDayAverageNewChats": None,
+            "previousSevenDayAverageNewChats": None,
+            "accelerationPct": None,
+            "breadthChangePp": None,
+            "noiseBandPct": None,
+            "direction": "collecting",
+        }
+        history.append(point)
+
+        recent7 = history[-7:]
+        recent7_ready = (
+            len(recent7) == 7
+            and (
+                datetime.strptime(recent7[-1]["date"], "%Y-%m-%d").date()
+                - datetime.strptime(recent7[0]["date"], "%Y-%m-%d").date()
+            ).days == 6
+            and all(
+                item["totalNewChats"] is not None
+                and item["comparisonCoveragePct"] >= 95
+                for item in recent7
+            )
+        )
+        if recent7_ready:
+            point["sevenDayAverageNewChats"] = round(
+                statistics.mean(item["totalNewChats"] for item in recent7)
+            )
+
+        recent14 = history[-14:]
+        recent14_ready = (
+            len(recent14) == 14
+            and (
+                datetime.strptime(recent14[-1]["date"], "%Y-%m-%d").date()
+                - datetime.strptime(recent14[0]["date"], "%Y-%m-%d").date()
+            ).days == 13
+            and all(
+                item["totalNewChats"] is not None
+                and item["comparisonCoveragePct"] >= 95
+                for item in recent14
+            )
+        )
+        if recent14_ready:
+            previous7 = recent14[:7]
+            current7 = recent14[7:]
+            current_average = round(
+                statistics.mean(item["totalNewChats"] for item in current7)
+            )
+            previous_average = round(
+                statistics.mean(item["totalNewChats"] for item in previous7)
+            )
+            point["sevenDayAverageNewChats"] = current_average
+            point["previousSevenDayAverageNewChats"] = previous_average
+            point["accelerationPct"] = round(
+                (current_average / previous_average - 1) * 100, 1
+            ) if previous_average else None
+            current_breadth = statistics.mean(
+                item["activeSharePct"] for item in current7
+            )
+            previous_breadth = statistics.mean(
+                item["activeSharePct"] for item in previous7
+            )
+            point["breadthChangePp"] = round(current_breadth - previous_breadth, 1)
+            point["direction"] = "provisional"
+
+        if len(history) >= 28 and point["accelerationPct"] is not None:
+            acceleration_values = [
+                item["accelerationPct"]
+                for item in history[-28:]
+                if item["accelerationPct"] is not None
+            ]
+            if acceleration_values:
+                noise = round(
+                    statistics.median(abs(value) for value in acceleration_values),
+                    1,
+                )
+                point["noiseBandPct"] = noise
+                acceleration = point["accelerationPct"]
+                if acceleration > noise:
+                    point["direction"] = (
+                        "broadAcceleration"
+                        if (point["breadthChangePp"] or 0) >= 0
+                        else "concentratedAcceleration"
+                    )
+                elif acceleration < -noise:
+                    point["direction"] = "decelerating"
+                else:
+                    point["direction"] = "mixed"
+    return history
+
+
 def build_core_history(db: sqlite3.Connection) -> list[dict[str, Any]]:
     """현재 API 관측만으로 100만+ 핵심 플롯 재고의 날짜별 스냅샷을 만듦.
 
@@ -1022,6 +1337,20 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
         if row["latest_comment_count"] is not None
     ]
     homepage_history = build_homepage_history(db)
+    activity_history = build_activity_history(db)
+    activity_panel_rows = db.execute(
+        """
+        SELECT segment, COUNT(*) AS member_count, MIN(selected_date) AS selected_date
+        FROM measurement_panel
+        WHERE active=1
+        GROUP BY segment
+        """
+    ).fetchall()
+    activity_panel_size = sum(row["member_count"] for row in activity_panel_rows)
+    activity_selected_date = min(
+        (row["selected_date"] for row in activity_panel_rows),
+        default=None,
+    )
     core_history = build_core_history(db)
     core_inventory = core_history[-1] if core_history else None
     payload = {
@@ -1045,6 +1374,28 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             ).fetchone()[0],
         },
         "platformHistory": platform_history,
+        "activityPolicy": {
+            "metric": "interactionCount",
+            "label": "observedPublicChatActivityProxy",
+            "panelTarget": PANEL_TARGET,
+            "volumePanelTarget": PANEL_VOLUME_TARGET,
+            "tailPanelTarget": PANEL_TAIL_TARGET,
+            "hotRefreshTarget": HOT_REFRESH_TARGET,
+            "rotationRefreshTarget": ROTATION_REFRESH_TARGET,
+            "negativeDeltaRule": "excludedAndFlagged",
+            "directionMinimumDays": 14,
+            "noiseBandMinimumDays": 28,
+        },
+        "activityPanel": {
+            "panelSize": activity_panel_size,
+            "selectedDate": activity_selected_date,
+            "segments": {
+                row["segment"]: row["member_count"]
+                for row in activity_panel_rows
+            },
+        },
+        "activityLatest": activity_history[-1] if activity_history else None,
+        "activityHistory": activity_history,
         "corePolicy": {
             "metric": "interactionCount",
             "coreThreshold": CORE_THRESHOLD,
@@ -1071,6 +1422,8 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
         {
             "updatedAt": payload["updatedAt"],
             "coverage": payload["coverage"],
+            "activityPanel": payload["activityPanel"],
+            "activityLatest": payload["activityLatest"],
             "errors": payload["errors"],
         },
     )
@@ -1084,7 +1437,7 @@ def main() -> int:
     parser.add_argument("--out", default=str(root / "public" / "data"))
     parser.add_argument("--max-tag-pages", type=int, default=120)
     parser.add_argument("--max-comment-plots", type=int, default=250)
-    parser.add_argument("--max-plot-refresh", type=int, default=1500)
+    parser.add_argument("--max-plot-refresh", type=int, default=3000)
     parser.add_argument("--refresh-workers", type=int, default=10)
     parser.add_argument("--infinite-pages", type=int, default=8)
     args = parser.parse_args()

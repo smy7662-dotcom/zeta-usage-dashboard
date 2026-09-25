@@ -9,6 +9,7 @@ const state = {
   chartablePlots: [],
   detailPlotId: null,
   chartPoints: [],
+  activityChartPoints: [],
   coreChartPoints: [],
 };
 
@@ -29,6 +30,14 @@ const metricLabels = {
 const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat("ko-KR");
 const signed = new Intl.NumberFormat("ko-KR", { signDisplay: "exceptZero" });
+const activityDirectionLabels = {
+  collecting: "기준선 수집 중",
+  provisional: "잠정 변화율",
+  broadAcceleration: "광범위한 가속",
+  concentratedAcceleration: "소수 플롯 중심 가속",
+  decelerating: "감속",
+  mixed: "방향 불명확",
+};
 
 function parseDay(value) {
   return new Date(`${value}T00:00:00+09:00`);
@@ -114,6 +123,182 @@ function plotChanges() {
     const comparison = pair(plot.series, "chats");
     return { ...plot, comparison, delta: comparison?.delta ?? null };
   });
+}
+
+function activityData() {
+  const history = state.data.activityHistory || [];
+  return {
+    history,
+    latest: state.data.activityLatest || history[history.length - 1] || null,
+    panel: state.data.activityPanel || { panelSize: 0, selectedDate: null, segments: {} },
+  };
+}
+
+function renderActivitySummary() {
+  const { history, latest, panel } = activityData();
+  const validDays = history.filter((point) =>
+    point.totalNewChats != null && point.comparisonCoveragePct >= 95
+  ).length;
+  if (!latest) {
+    $("activity-seven-day").textContent = "기준선 대기";
+    $("activity-acceleration").textContent = "판정 대기";
+    $("activity-per-plot").textContent = "—";
+    $("activity-breadth").textContent = "—";
+    $("activity-summary").textContent = panel.panelSize
+      ? `고정 패널 ${number.format(panel.panelSize)}개`
+      : "패널 생성 대기";
+    $("activity-coverage").textContent = "연속 관측값 없음";
+    return;
+  }
+
+  $("activity-seven-day").textContent = latest.sevenDayAverageNewChats == null
+    ? "기준선 대기"
+    : compact(latest.sevenDayAverageNewChats);
+  $("activity-seven-day-note").textContent = latest.sevenDayAverageNewChats == null
+    ? `유효 관측 ${Math.min(validDays, 7)}/7일`
+    : `정확히 ${exact(latest.sevenDayAverageNewChats)}회/일`;
+
+  $("activity-acceleration").textContent = latest.accelerationPct == null
+    ? "판정 대기"
+    : `${latest.accelerationPct > 0 ? "+" : ""}${latest.accelerationPct.toFixed(1)}%`;
+  $("activity-acceleration-note").textContent = latest.accelerationPct == null
+    ? `유효 관측 ${Math.min(validDays, 14)}/14일`
+    : `${activityDirectionLabels[latest.direction] || "잠정 변화율"} · 직전 7일 대비`;
+
+  $("activity-per-plot").textContent = latest.averageCumulativeChatsPerPlot == null
+    ? "—"
+    : compact(latest.averageCumulativeChatsPerPlot);
+  $("activity-per-plot").title = latest.averageCumulativeChatsPerPlot == null
+    ? ""
+    : `평균 ${exact(latest.averageCumulativeChatsPerPlot)}회`;
+  $("activity-per-plot-note").textContent = latest.medianNewChatsPerPlot == null
+    ? "고정 패널 평균 · 오늘 신규 중앙값"
+    : `누적 중앙 ${compact(latest.medianCumulativeChatsPerPlot)} · 신규 중앙 ${signed.format(latest.medianNewChatsPerPlot)}회`;
+  $("activity-breadth").textContent = latest.activeSharePct == null
+    ? "—"
+    : `${latest.activeSharePct.toFixed(1)}%`;
+  $("activity-breadth-note").textContent = latest.activeSharePct == null
+    ? "대화량이 증가한 비교 가능 플롯"
+    : `활성 ${number.format(latest.activePlots)}개 · 상위 10 기여 ${latest.top10ContributionPct == null ? "—" : `${latest.top10ContributionPct.toFixed(1)}%`}`;
+
+  $("activity-summary").textContent = latest.accelerationPct == null
+    ? `관측 ${Math.min(validDays, 14)}/14일`
+    : activityDirectionLabels[latest.direction] || "잠정 변화율";
+  const correctionNote = latest.negativeCorrections
+    ? ` · 원값 정정 ${number.format(latest.negativeCorrections)}개 제외`
+    : "";
+  $("activity-coverage").textContent = `고정 패널 당일 ${number.format(latest.observedPanelPlots)}/${number.format(latest.panelSize)}개 · 일일 비교 ${number.format(latest.matchedPlots)}개 (${latest.comparisonCoveragePct.toFixed(1)}%)${correctionNote}`;
+}
+
+function drawActivityChart() {
+  const canvas = $("activity-chart");
+  const wrap = $("activity-chart-wrap");
+  const points = activityData().history.filter((point) => point.totalNewChats != null);
+  $("activity-empty").hidden = points.length > 0;
+  if (!points.length) {
+    state.activityChartPoints = [];
+    return;
+  }
+
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const width = wrap.clientWidth;
+  const height = wrap.clientHeight;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, width, height);
+
+  const pad = { left: 68, right: 24, top: 18, bottom: 42 };
+  const plotW = Math.max(1, width - pad.left - pad.right);
+  const plotH = Math.max(1, height - pad.top - pad.bottom);
+  const values = points.flatMap((point) => [
+    point.totalNewChats,
+    point.sevenDayAverageNewChats,
+  ]).filter((value) => value != null);
+  const maxRaw = Math.max(...values, 1);
+  const step = niceStep(maxRaw, 5);
+  const maxValue = Math.ceil(maxRaw / step) * step;
+  const firstTime = parseDay(points[0].date).getTime();
+  const lastTime = parseDay(points[points.length - 1].date).getTime();
+  const timeSpan = Math.max(86400000, lastTime - firstTime);
+  const x = (date) => pad.left + ((parseDay(date).getTime() - firstTime) / timeSpan) * plotW;
+  const y = (value) => pad.top + (1 - value / maxValue) * plotH;
+
+  ctx.font = '11px "IBM Plex Sans KR", sans-serif';
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#dfe5df";
+  ctx.fillStyle = "#7c8883";
+  ctx.textBaseline = "middle";
+  for (let value = 0; value <= maxValue + step * .1; value += step) {
+    const py = y(value);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, py);
+    ctx.lineTo(width - pad.right, py);
+    ctx.stroke();
+    ctx.textAlign = "right";
+    ctx.fillText(compact(value), pad.left - 9, py);
+  }
+
+  const barWidth = Math.min(42, Math.max(8, plotW / Math.max(points.length, 1) * .48));
+  const visualPoints = points.map((point, index) => {
+    let px = x(point.date);
+    if (index === 0) px = Math.max(pad.left + barWidth / 2, px);
+    if (index === points.length - 1) px = Math.min(width - pad.right - barWidth / 2, px);
+    const top = y(point.totalNewChats);
+    ctx.fillStyle = point.comparisonCoveragePct < 95
+      ? "rgba(232,117,83,.30)"
+      : "rgba(232,117,83,.64)";
+    ctx.fillRect(px - barWidth / 2, top, barWidth, pad.top + plotH - top);
+    return {
+      ...point,
+      x: px,
+      barTop: top,
+      lineY: point.sevenDayAverageNewChats == null ? null : y(point.sevenDayAverageNewChats),
+    };
+  });
+
+  ctx.strokeStyle = "#386fe5";
+  ctx.lineWidth = 3;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  let drawing = false;
+  visualPoints.forEach((point) => {
+    if (point.lineY == null) {
+      if (drawing) ctx.stroke();
+      drawing = false;
+      return;
+    }
+    if (!drawing) {
+      ctx.beginPath();
+      ctx.moveTo(point.x, point.lineY);
+      drawing = true;
+    } else {
+      ctx.lineTo(point.x, point.lineY);
+    }
+  });
+  if (drawing) ctx.stroke();
+  visualPoints.filter((point) => point.lineY != null).forEach((point) => {
+    ctx.beginPath();
+    ctx.arc(point.x, point.lineY, 4, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff";
+    ctx.fill();
+    ctx.strokeStyle = "#386fe5";
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  });
+
+  const labelIndexes = new Set([0, points.length - 1]);
+  if (width > 600 && points.length > 2) labelIndexes.add(Math.floor((points.length - 1) / 2));
+  const showYear = parseDay(points[0].date).getFullYear() !== parseDay(points[points.length - 1].date).getFullYear();
+  ctx.fillStyle = "#7c8883";
+  ctx.textBaseline = "top";
+  visualPoints.forEach((point, index) => {
+    if (!labelIndexes.has(index)) return;
+    ctx.textAlign = index === 0 ? "left" : index === points.length - 1 ? "right" : "center";
+    ctx.fillText(axisDate(point.date, showYear), point.x, height - pad.bottom + 14);
+  });
+  state.activityChartPoints = visualPoints;
 }
 
 function coreData() {
@@ -616,6 +801,8 @@ function drawChart() {
 }
 
 function renderAll() {
+  renderActivitySummary();
+  drawActivityChart();
   renderCoreSummary();
   drawCoreChart();
   renderKpis();
@@ -657,9 +844,30 @@ function bind() {
     if (state.detailPlotId) showPlotChart(state.detailPlotId);
   });
   window.addEventListener("resize", () => requestAnimationFrame(() => {
+    drawActivityChart();
     drawCoreChart();
     drawChart();
   }));
+  $("activity-chart").addEventListener("mousemove", (event) => {
+    if (!state.activityChartPoints.length) return;
+    const rect = event.target.getBoundingClientRect();
+    const mx = event.clientX - rect.left;
+    const nearest = state.activityChartPoints.reduce((best, point) => {
+      const distance = Math.abs(point.x - mx);
+      return !best || distance < best.distance ? { point, distance } : best;
+    }, null);
+    if (!nearest || nearest.distance > 34) {
+      $("activity-tooltip").hidden = true;
+      return;
+    }
+    const point = nearest.point;
+    const tip = $("activity-tooltip");
+    tip.innerHTML = `${escapeHtml(point.date)}<strong>신규 대화 ${exact(point.totalNewChats)}회</strong><span>일일 비교 ${number.format(point.matchedPlots)}/${number.format(point.panelSize)}개 (${point.comparisonCoveragePct.toFixed(1)}%)</span><span>플롯당 중앙 ${exact(point.medianNewChatsPerPlot)}회 · 활성 ${point.activeSharePct == null ? "—" : `${point.activeSharePct.toFixed(1)}%`}</span><span>7일 평균 ${point.sevenDayAverageNewChats == null ? "기준선 수집 중" : `${exact(point.sevenDayAverageNewChats)}회`}</span>`;
+    tip.hidden = false;
+    tip.style.left = `${Math.min(rect.width - 230, Math.max(6, point.x + 12))}px`;
+    tip.style.top = `${Math.max(4, point.barTop - 96)}px`;
+  });
+  $("activity-chart").addEventListener("mouseleave", () => { $("activity-tooltip").hidden = true; });
   $("core-chart").addEventListener("mousemove", (event) => {
     if (!state.coreChartPoints.length) return;
     const rect = event.target.getBoundingClientRect();

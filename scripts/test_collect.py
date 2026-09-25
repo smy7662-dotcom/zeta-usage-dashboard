@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,9 +11,11 @@ from scripts.backfill_wayback import parse_counts
 from scripts.collect import (
     build_dashboard,
     connect,
+    ensure_measurement_panel,
     ingest_payload,
     normalize_plot,
     refresh_known_plots,
+    select_refresh_targets,
 )
 
 
@@ -259,6 +261,89 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(history[1]["refreshedCorePlots"], 3)
         self.assertEqual(history[1]["coreCoveragePct"], 100.0)
         self.assertEqual(payload["coreInventory"], history[-1])
+
+    def test_measurement_panel_is_fixed_and_refreshes_before_rotation(self):
+        for index, chats in enumerate((2_000_000, 1_000_000, 400_000, 40_000, 4_000)):
+            self.ingest(
+                dict(SAMPLE, id=f"plot-{index}", interactionCount=chats),
+                "2026-09-25",
+            )
+        now = datetime(2026, 9, 25, tzinfo=timezone.utc)
+        size = ensure_measurement_panel(
+            self.db,
+            now,
+            target_size=4,
+            volume_target=2,
+        )
+        self.assertEqual(size, 4)
+        first_members = {
+            row[0]
+            for row in self.db.execute(
+                "SELECT plot_id FROM measurement_panel WHERE active=1"
+            )
+        }
+        self.ingest(
+            dict(SAMPLE, id="later-hit", interactionCount=9_000_000),
+            "2026-09-26",
+        )
+        ensure_measurement_panel(
+            self.db,
+            now + timedelta(days=1),
+            target_size=4,
+            volume_target=2,
+        )
+        second_members = {
+            row[0]
+            for row in self.db.execute(
+                "SELECT plot_id FROM measurement_panel WHERE active=1"
+            )
+        }
+        self.assertEqual(first_members, second_members)
+        targets = select_refresh_targets(
+            self.db,
+            now + timedelta(days=1),
+            limit=5,
+            hot_limit=1,
+        )
+        self.assertEqual(set(targets[:4]), first_members)
+        self.assertEqual(targets[4], "later-hit")
+
+    def test_activity_history_uses_consecutive_fixed_panel_deltas(self):
+        start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        for index in range(15):
+            day = (start + timedelta(days=index)).date().isoformat()
+            self.ingest(
+                dict(SAMPLE, id="panel-a", interactionCount=1_000_000 + index * 10),
+                day,
+                source="detail",
+            )
+            self.ingest(
+                dict(SAMPLE, id="panel-b", interactionCount=2_000_000 + index * 20),
+                day,
+                source="detail",
+            )
+        for plot_id in ("panel-a", "panel-b"):
+            self.db.execute(
+                """
+                INSERT INTO measurement_panel (
+                  plot_id, segment, selected_at, selected_date
+                ) VALUES (?, 'volume', '2026-09-01T00:00:00Z', '2026-09-01')
+                """,
+                (plot_id,),
+            )
+        self.db.commit()
+
+        payload = build_dashboard(self.db, self.root / "out-activity", [])
+        latest = payload["activityLatest"]
+        self.assertEqual(latest["totalNewChats"], 30)
+        self.assertEqual(latest["averageNewChatsPerPlot"], 15)
+        self.assertEqual(latest["medianNewChatsPerPlot"], 15)
+        self.assertEqual(latest["activeSharePct"], 100.0)
+        self.assertEqual(latest["comparisonCoveragePct"], 100.0)
+        self.assertEqual(latest["sevenDayAverageNewChats"], 30)
+        self.assertEqual(latest["previousSevenDayAverageNewChats"], 30)
+        self.assertEqual(latest["accelerationPct"], 0.0)
+        self.assertEqual(latest["direction"], "provisional")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,54 @@
       </div>
     </header>
 
+    <section class="panel activity-panel" aria-labelledby="activity-title">
+      <div class="panel-head">
+        <div>
+          <p class="section-kicker">CHAT ACTIVITY PROXY</p>
+          <h2 id="activity-title">제타 공개 채팅활동 대리지표</h2>
+          <p class="annotation">매일 같은 고정 플롯 패널의 신규 대화량으로 채팅 생성 속도를 비교함</p>
+        </div>
+        <div class="chart-summary" id="activity-summary">데이터 불러오는 중</div>
+      </div>
+
+      <div class="activity-kpi-grid" aria-label="공개 채팅활동 핵심 지표">
+        <article>
+          <p>최근 7일 일평균 신규 대화</p>
+          <strong id="activity-seven-day">—</strong>
+          <small id="activity-seven-day-note">고정 패널 기준선 수집 중</small>
+        </article>
+        <article>
+          <p>직전 7일 대비</p>
+          <strong id="activity-acceleration">—</strong>
+          <small id="activity-acceleration-note">14일 관측 후 계산</small>
+        </article>
+        <article>
+          <p>플롯당 누적 대화</p>
+          <strong id="activity-per-plot">—</strong>
+          <small id="activity-per-plot-note">고정 패널 평균 · 오늘 신규 중앙값</small>
+        </article>
+        <article>
+          <p>활성 플롯 비율</p>
+          <strong id="activity-breadth">—</strong>
+          <small id="activity-breadth-note">대화량이 증가한 비교 가능 플롯</small>
+        </article>
+      </div>
+
+      <div class="activity-chart-meta">
+        <div class="activity-legend" aria-label="채팅활동 차트 범례">
+          <span><i class="activity-legend-bar" aria-hidden="true"></i>일일 신규 대화</span>
+          <span><i class="activity-legend-line" aria-hidden="true"></i>7일 이동평균</span>
+        </div>
+        <p id="activity-coverage">고정 패널 커버리지 확인 중</p>
+      </div>
+      <div class="activity-chart-wrap" id="activity-chart-wrap">
+        <canvas id="activity-chart" aria-label="고정 패널 일일 신규 대화량과 7일 이동평균"></canvas>
+        <div class="tooltip" id="activity-tooltip" hidden></div>
+        <div class="empty-state" id="activity-empty" hidden>비교 가능한 연속 관측일을 수집 중임.</div>
+      </div>
+      <p class="activity-caveat">앱 전체 이용자 수가 아니라 공개 플롯 고정 패널의 채팅 생성 속도임. 패널 밖 신규 히트와 늦게 발견한 플롯은 아래에서 별도로 확인함.</p>
+    </section>
+
     <section class="panel core-panel" aria-labelledby="core-title">
       <div class="panel-head">
         <div>
