@@ -13,6 +13,7 @@ from scripts.collect import (
     build_regeneration_cohorts,
     connect,
     ensure_measurement_panel,
+    import_published_history,
     ingest_payload,
     normalize_plot,
     refresh_known_plots,
@@ -112,6 +113,44 @@ class CollectorTests(unittest.TestCase):
         value = self.db.execute("SELECT interaction_count FROM plot_observations").fetchone()[0]
         self.assertEqual(count, 1)
         self.assertEqual(value, 140)
+
+    def test_checked_in_history_seed_is_idempotent_and_preserves_regen(self):
+        snapshot = self.root / "published.json"
+        snapshot.write_text(
+            json.dumps(
+                {
+                    "plots": [
+                        {
+                            "id": "archived-plot",
+                            "name": "복원 플롯",
+                            "creator": "archivist",
+                            "tags": ["로맨스"],
+                            "series": [
+                                {
+                                    "date": "2024-05-22",
+                                    "chats": 100,
+                                    "chatsWithRegen": 125,
+                                    "source": "wayback-api",
+                                    "sourceUrl": "https://example.test/archive",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(import_published_history(self.db, snapshot), 1)
+        self.assertEqual(import_published_history(self.db, snapshot), 0)
+        row = self.db.execute(
+            """
+            SELECT interaction_count, interaction_with_regen
+            FROM plot_observations WHERE plot_id='archived-plot'
+            """
+        ).fetchone()
+        self.assertEqual(row["interaction_count"], 100)
+        self.assertEqual(row["interaction_with_regen"], 125)
 
     def test_core_inventory_matches_latest_plot_payloads_on_source_tie(self):
         observed_at = "2026-09-25T04:00:00Z"

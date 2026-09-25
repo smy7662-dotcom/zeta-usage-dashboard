@@ -222,6 +222,95 @@ def normalize_plot(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def import_published_history(db: sqlite3.Connection, dashboard_path: Path) -> int:
+    """Seed archived observations from the checked-in public snapshot.
+
+    GitHub Actions restores the live SQLite cache independently from Git.  The
+    checked-in dashboard contains manually recovered Wayback observations that
+    must survive cache replacement, so import only missing observation rows and
+    never overwrite fresher database values.
+    """
+    if not dashboard_path.exists():
+        return 0
+    try:
+        payload = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+    imported = 0
+    for plot in payload.get("plots", []):
+        plot_id = plot.get("id")
+        series = plot.get("series") if isinstance(plot.get("series"), list) else []
+        dates = sorted(
+            point.get("date")
+            for point in series
+            if isinstance(point, dict) and point.get("date")
+        )
+        if not plot_id or not dates:
+            continue
+        first_seen_at = f"{dates[0]}T00:00:00Z"
+        last_seen_at = f"{dates[-1]}T00:00:00Z"
+        db.execute(
+            """
+            INSERT OR IGNORE INTO plots (
+              plot_id, name, creator_username, mode, metric_kind,
+              released_at, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, 'interactionCount', ?, ?, ?)
+            """,
+            (
+                str(plot_id),
+                str(plot.get("name") or "이름 없음"),
+                plot.get("creator"),
+                plot.get("mode") or "ZETA",
+                plot.get("releasedAt"),
+                first_seen_at,
+                last_seen_at,
+            ),
+        )
+        for tag in plot.get("tags") or []:
+            normalized_tag = str(tag).strip().casefold()
+            if not normalized_tag:
+                continue
+            db.execute(
+                "INSERT OR IGNORE INTO plot_tags(plot_id, tag) VALUES (?, ?)",
+                (str(plot_id), normalized_tag),
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO tag_queue(tag) VALUES (?)",
+                (normalized_tag,),
+            )
+        for point in series:
+            if not isinstance(point, dict):
+                continue
+            day = point.get("date")
+            chats = integer(point.get("chats"))
+            if not day or chats is None:
+                continue
+            source = str(point.get("source") or "published-history")
+            cursor = db.execute(
+                """
+                INSERT OR IGNORE INTO plot_observations (
+                  plot_id, observed_date, observed_at, source,
+                  interaction_count, interaction_with_regen,
+                  comment_count, source_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(plot_id),
+                    day,
+                    f"{day}T00:00:00Z",
+                    source,
+                    chats,
+                    integer(point.get("chatsWithRegen")),
+                    integer(point.get("comments")),
+                    point.get("sourceUrl") or "checked-in-dashboard",
+                ),
+            )
+            imported += max(cursor.rowcount, 0)
+    db.commit()
+    return imported
+
+
 def iter_plot_candidates(value: Any) -> Iterable[dict[str, Any]]:
     if isinstance(value, dict):
         normalized = normalize_plot(value)
@@ -1596,6 +1685,7 @@ def main() -> int:
 
     now = utc_now()
     db = connect(Path(args.db))
+    import_published_history(db, Path(args.out) / "dashboard.json")
     before = db.execute("SELECT COUNT(*) FROM plots").fetchone()[0]
     run_id = db.execute(
         "INSERT INTO runs(started_at, plots_before) VALUES (?, ?)",
