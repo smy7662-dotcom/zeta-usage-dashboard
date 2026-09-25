@@ -607,11 +607,13 @@ def prefer_observation(current: sqlite3.Row | None, candidate: sqlite3.Row) -> s
         current["observed_at"],
         current["comment_count"] is not None,
         current["source"] == "live",
+        current["source"],
     )
     candidate_key = (
         candidate["observed_at"],
         candidate["comment_count"] is not None,
         candidate["source"] == "live",
+        candidate["source"],
     )
     return candidate if candidate_key > current_key else current
 

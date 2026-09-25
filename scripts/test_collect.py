@@ -62,6 +62,30 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(value, 140)
 
+    def test_core_inventory_matches_latest_plot_payloads_on_source_tie(self):
+        observed_at = "2026-09-25T04:00:00Z"
+        self.ingest(
+            dict(SAMPLE, id="core-tie", interactionCount=1_500_000),
+            "2026-09-25",
+            observed_at=observed_at,
+            source="detail",
+        )
+        self.ingest(
+            dict(SAMPLE, id="core-tie", interactionCount=1_500_924),
+            "2026-09-25",
+            observed_at=observed_at,
+            source="ranking",
+        )
+
+        payload = build_dashboard(self.db, self.root / "out-tie", [])
+        direct_total = sum(
+            plot["chats"]
+            for plot in payload["plots"]
+            if plot["chats"] >= 1_000_000
+        )
+        self.assertEqual(payload["coreInventory"]["coreTotalChats"], direct_total)
+        self.assertEqual(direct_total, 1_500_924)
+
     def test_dashboard_does_not_interpolate_missing_days(self):
         self.ingest(SAMPLE, "2026-09-20")
         self.ingest(dict(SAMPLE, interactionCount=160), "2026-09-23")
