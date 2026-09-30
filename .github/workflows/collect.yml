@@ -2,8 +2,16 @@ name: collect-and-publish
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "daily = 전체 수집, trending-only = 기존 당일 관측을 유지하고 TRENDING만 추가"
+        type: choice
+        options:
+          - daily
+          - trending-only
+        default: daily
   schedule:
-    # 매일 00:10 KST (전날 15:10 UTC)
+    # 매일 00:10 KST 요청. GitHub 예약 실행은 지연될 수 있음.
     - cron: "10 15 * * *"
 
 permissions:
@@ -38,9 +46,17 @@ jobs:
             zeta-db-
 
       - name: Collect public Zeta metrics
-        run: python scripts/collect.py --max-tag-pages 120 --max-plot-refresh 3000 --max-comment-plots 250 --infinite-pages 8
+        env:
+          RUN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'daily' }}
+        run: |
+          if [ "$RUN_MODE" = "trending-only" ]; then
+            python scripts/collect.py --trending-only
+          else
+            python scripts/collect.py --max-tag-pages 120 --max-plot-refresh 3000 --max-comment-plots 250 --infinite-pages 8
+          fi
 
       - name: Backfill a small Wayback batch
+        if: inputs.mode != 'trending-only'
         continue-on-error: true
         run: python scripts/backfill_wayback.py --limit 1 --delay 0.25
 
@@ -74,6 +90,13 @@ jobs:
         with:
           name: zeta-public-data-${{ github.run_number }}
           path: public/data
+          retention-days: 90
+
+      - name: Preserve collector database
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeta-db-${{ github.run_number }}
+          path: data/zeta.sqlite3
           retention-days: 90
 
       - name: Keep scheduled workflow active

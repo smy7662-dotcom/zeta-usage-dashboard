@@ -4,6 +4,12 @@
 
 ## 실행
 
+운영 수집은 GitHub Actions에서 매일 00:10 KST에 예약되며 실제 시작은 지연될 수 있음.
+기존 랭킹에 TRENDING 상위 100 작품의 공개 API 원값을 함께 수집함.
+수동 `trending-only` 실행은 기존 당일 상세 관측을 덮어쓰지 않고 새 랭킹만 추가함.
+Otoscor 공개 Git 과거 기록은 작품별 시계열에만 연결하며 플랫폼 합계에는 포함하지 않음.
+SQLite DB는 Actions 캐시와 90일 보관 아티팩트에 함께 저장됨.
+
 ```powershell
 python scripts/collect.py
 python scripts/backfill_wayback.py --limit 20
@@ -16,6 +22,8 @@ python -m unittest scripts/test_collect.py
 ## 현재 수집 원천
 
 - [플롯 랭킹 API](https://api.zeta-ai.io/v1/plots/ranking?type=GLOBAL&limit=100&gender=ALL)
+- [TRENDING API](https://api.zeta-ai.io/v1/plots/ranking?type=TRENDING&limit=100&genres=ALL&filterType=GENRE&filterValues=all)
+- [Otoscor 공개 과거 스냅샷](https://github.com/Otoscor/chatbotmonitoring): API 기반 기록만 `archive/otoscor-zeta-observations.json`에 보존함.
 - [디스커버리 API](https://api.zeta-ai.io/v1/discovery-tab)
 - [태그 검색 API](https://api.zeta-ai.io/v2/plots/search?keyword=%23zeta&limit=50&order=LATEST)
 - [댓글 수 API](https://api.zeta-ai.io/v1/plots/7ca5d04c-e2e0-425a-9dfd-e4cf0cdf7878/comments/count)

@@ -11,11 +11,15 @@ from scripts.backfill_wayback import parse_counts
 from scripts.collect import (
     build_dashboard,
     build_regeneration_cohorts,
+    collect_ranking,
+    collect_seeds,
     connect,
     ensure_measurement_panel,
     import_published_history,
+    import_external_history,
     ingest_payload,
     normalize_plot,
+    ranking_url,
     refresh_known_plots,
     select_refresh_targets,
 )
@@ -432,6 +436,68 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(latest["previousSevenDayAverageNewChats"], 30)
         self.assertEqual(latest["accelerationPct"], 0.0)
         self.assertEqual(latest["direction"], "provisional")
+
+
+    def test_trending_collection_preserves_other_same_day_observations(self):
+        self.ingest(SAMPLE, "2026-10-01", observed_at="2026-09-30T19:56:28Z")
+        now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        with patch("scripts.collect.request_json", return_value={"rankings": [
+            dict(SAMPLE, interactionCount=150),
+            dict(SAMPLE, interactionCount=150),
+        ]}) as request:
+            self.assertEqual(collect_ranking(self.db, now, "TRENDING"), 1)
+            self.assertEqual(collect_ranking(self.db, now, "TRENDING"), 1)
+        from urllib.parse import parse_qs, urlparse
+        params = parse_qs(urlparse(request.call_args.args[0]).query)
+        self.assertEqual(params["filterType"], ["GENRE"])
+        self.assertEqual(params["filterValues"], ["all"])
+        self.assertNotIn("gender", params)
+        rows = self.db.execute(
+            "SELECT source, interaction_count, observed_at FROM plot_observations ORDER BY source"
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(tuple(rows[0]), ("detail", 100, "2026-09-30T19:56:28Z"))
+        self.assertEqual(rows[1]["interaction_count"], 150)
+        result = build_dashboard(self.db, self.root / "out-trending", [])
+        self.assertEqual(result["coverage"]["trendingLatestDate"], "2026-10-01")
+        self.assertEqual(result["coverage"]["trendingPlotsLatest"], 1)
+
+    def test_empty_trending_response_fails_collection(self):
+        with patch("scripts.collect.request_json", return_value={"rankings": []}):
+            with self.assertRaisesRegex(RuntimeError, "no valid plots"):
+                collect_ranking(self.db, datetime.now(timezone.utc), "TRENDING")
+
+    def test_daily_seed_collection_includes_trending(self):
+        with patch("scripts.collect.collect_ranking", return_value=1) as ranking:
+            with patch("scripts.collect.request_json", return_value={}):
+                collect_seeds(self.db, datetime.now(timezone.utc), [], infinite_pages=0)
+        self.assertIn("TRENDING", [call.args[2] for call in ranking.call_args_list])
+        self.assertIn("gender=ALL", ranking_url("WEEKLY"))
+
+    def test_external_history_stays_out_of_platform_totals_and_import_is_repeatable(self):
+        archive = self.root / "external.json"
+        archive.write_text(json.dumps({
+            "plots": [{"id": "external-plot", "name": "past", "tags": ["history"]}],
+            "observations": [{
+                "plotId": "external-plot", "date": "2026-02-02",
+                "observedAt": "2026-02-02T03:43:14Z",
+                "source": "external:otoscor-zeta", "chats": 1_500_000,
+                "sourceUrl": "https://example.test/archive",
+            }],
+        }), encoding="utf-8")
+        self.assertEqual(import_external_history(self.db, archive), {"plots": 1, "observations": 1})
+        self.assertEqual(import_external_history(self.db, archive), {"plots": 0, "observations": 0})
+        self.ingest(SAMPLE, "2026-10-01")
+        result = build_dashboard(self.db, self.root / "out-external", [])
+        self.assertEqual([p["date"] for p in result["platformHistory"]], ["2026-10-01"])
+        self.assertEqual(result["platformHistory"][0]["totalChats"], 100)
+        self.assertEqual(result["coreInventory"]["corePlotCount"], 0)
+        self.assertEqual(result["coverage"]["externalHistoryObservations"], 1)
+        external = next(p for p in result["plots"] if p["id"] == "external-plot")
+        self.assertTrue(external["historicalOnly"])
+        self.assertEqual(external["series"][0]["observedAt"], "2026-02-02T03:43:14Z")
+        self.assertIsNone(external["chatsWithRegen"])
+        self.assertIsNone(external["comments"])
 
 
 if __name__ == "__main__":

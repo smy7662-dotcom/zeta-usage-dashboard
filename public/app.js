@@ -452,7 +452,7 @@ function coreData() {
     };
   }
   const policy = state.data.corePolicy || { coreThreshold: 1000000, watchThreshold: 500000 };
-  const available = (state.data.plots || []).filter((plot) => Number.isFinite(plot.chats));
+  const available = (state.data.plots || []).filter((plot) => Number.isFinite(plot.chats) && !plot.historicalOnly);
   const core = available.filter((plot) => plot.chats >= policy.coreThreshold);
   const watch = available.filter((plot) => plot.chats >= policy.watchThreshold && plot.chats < policy.coreThreshold);
   if (!available.length) return { history: [], latest: null };
@@ -694,7 +694,7 @@ function showPlot(plotId) {
   $("detail-meta").textContent = `${plot.creator || "제작자 미확인"} · 관측 ${plot.series.length}회`;
   $("detail-link").href = `https://zeta-ai.io/ko/plots/${encodeURIComponent(plot.id)}/profile`;
   $("detail-stats").innerHTML = [
-    ["현재 대화", exact(plot.chats)],
+    [plot.historicalOnly ? "과거 마지막 관측" : "현재 대화", exact(plot.chats)],
     ["재생성 포함", exact(plot.chatsWithRegen)],
     ["댓글", exact(plot.comments)],
     ["선택 기간 증가", comparison ? signed.format(comparison.delta) : "—"],
@@ -704,6 +704,8 @@ function showPlot(plotId) {
 }
 
 function sourceLabel(source) {
+  if (source === "external:otoscor-zeta") return "GitHub 공개 과거 스냅샷";
+  if (source === "ranking:trending") return "현재 TRENDING API";
   if (source === "wayback-home") return "Wayback 홈 캡처";
   if (source === "wayback-api") return "Wayback API JSON";
   if (source === "wayback") return "Wayback 프로필";

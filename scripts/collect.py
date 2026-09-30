@@ -25,7 +25,8 @@ from typing import Any, Iterable
 API = "https://api.zeta-ai.io"
 USER_AGENT = "zeta-usage-observatory/1.0"
 KST = timezone(timedelta(hours=9))
-RANKING_TYPES = ("GLOBAL", "REALTIME", "DAILY", "WEEKLY", "MONTHLY")
+RANKING_TYPES = ("GLOBAL", "REALTIME", "DAILY", "WEEKLY", "MONTHLY", "TRENDING")
+EXTERNAL_HISTORY_SOURCES = ("external:otoscor-zeta",)
 CORE_THRESHOLD = 1_000_000
 WATCH_THRESHOLD = 500_000
 PANEL_TARGET = 1_500
@@ -69,6 +70,21 @@ def request_json(url: str, *, attempts: int = 3) -> Any:
                 time.sleep(1.5 * (attempt + 1))
     assert last_error is not None
     raise last_error
+
+
+def ranking_url(ranking_type: str, *, limit: int = 100) -> str:
+    ranking_type = ranking_type.upper()
+    if ranking_type == "TRENDING":
+        params = {
+            "type": ranking_type,
+            "limit": str(limit),
+            "genres": "ALL",
+            "filterType": "GENRE",
+            "filterValues": "all",
+        }
+    else:
+        params = {"type": ranking_type, "limit": str(limit), "gender": "ALL"}
+    return f"{API}/v1/plots/ranking?{urllib.parse.urlencode(params)}"
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -298,7 +314,7 @@ def import_published_history(db: sqlite3.Connection, dashboard_path: Path) -> in
                 (
                     str(plot_id),
                     day,
-                    f"{day}T00:00:00Z",
+                    point.get("observedAt") or f"{day}T00:00:00Z",
                     source,
                     chats,
                     integer(point.get("chatsWithRegen")),
@@ -309,6 +325,65 @@ def import_published_history(db: sqlite3.Connection, dashboard_path: Path) -> in
             imported += max(cursor.rowcount, 0)
     db.commit()
     return imported
+
+
+def import_external_history(db: sqlite3.Connection, archive_path: Path) -> dict[str, int]:
+    """출처가 확인된 과거 표본을 중복 없이 작품별 시계열에만 추가함."""
+    counts = {"plots": 0, "observations": 0}
+    if not archive_path.exists():
+        return counts
+    payload = json.loads(archive_path.read_text(encoding="utf-8"))
+    for plot in payload.get("plots", []):
+        plot_id = str(plot.get("id") or "").strip()
+        if not plot_id:
+            continue
+        first_seen = plot.get("firstSeenAt") or "1970-01-01T00:00:00Z"
+        cursor = db.execute(
+            """
+            INSERT OR IGNORE INTO plots (
+              plot_id, name, creator_username, mode, metric_kind,
+              first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, 'interactionCount', ?, ?)
+            """,
+            (
+                plot_id, str(plot.get("name") or "이름 없음"), plot.get("creator"),
+                plot.get("mode") or "ZETA", first_seen,
+                plot.get("lastSeenAt") or first_seen,
+            ),
+        )
+        counts["plots"] += max(cursor.rowcount, 0)
+        for tag in plot.get("tags") or []:
+            normalized = str(tag).strip().casefold()
+            if normalized:
+                db.execute(
+                    "INSERT OR IGNORE INTO plot_tags(plot_id, tag) VALUES (?, ?)",
+                    (plot_id, normalized),
+                )
+                db.execute("INSERT OR IGNORE INTO tag_queue(tag) VALUES (?)", (normalized,))
+    for row in payload.get("observations", []):
+        plot_id = str(row.get("plotId") or "").strip()
+        day, source, chats = row.get("date"), row.get("source"), integer(row.get("chats"))
+        if (
+            not plot_id or not day or source not in EXTERNAL_HISTORY_SOURCES
+            or chats is None or chats < 0
+            or db.execute("SELECT 1 FROM plots WHERE plot_id=?", (plot_id,)).fetchone() is None
+        ):
+            continue
+        cursor = db.execute(
+            """
+            INSERT OR IGNORE INTO plot_observations (
+              plot_id, observed_date, observed_at, source,
+              interaction_count, interaction_with_regen, comment_count, source_url
+            ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)
+            """,
+            (
+                plot_id, day, row.get("observedAt") or f"{day}T00:00:00Z",
+                source, chats, row.get("sourceUrl") or "checked-in-external-history",
+            ),
+        )
+        counts["observations"] += max(cursor.rowcount, 0)
+    db.commit()
+    return counts
 
 
 def iter_plot_candidates(value: Any) -> Iterable[dict[str, Any]]:
@@ -429,21 +504,27 @@ def ingest_payload(
     return found, new
 
 
+def collect_ranking(db: sqlite3.Connection, now: datetime, ranking_type: str) -> int:
+    url = ranking_url(ranking_type)
+    payload = request_json(url)
+    found, _ = ingest_payload(
+        db, payload, observed_at=iso_z(utc_now()), observed_date=kst_day(now),
+        source=f"ranking:{ranking_type.lower()}", source_url=url,
+    )
+    if ranking_type == "TRENDING" and found == 0:
+        raise RuntimeError("TRENDING returned no valid plots; collection is incomplete")
+    db.commit()
+    return found
+
+
 def collect_seeds(db: sqlite3.Connection, now: datetime, errors: list[str], infinite_pages: int) -> None:
     observed_at, observed_date = iso_z(now), kst_day(now)
     for ranking_type in RANKING_TYPES:
-        url = f"{API}/v1/plots/ranking?type={ranking_type}&limit=100&gender=ALL"
         try:
-            payload = request_json(url)
-            ingest_payload(
-                db,
-                payload,
-                observed_at=observed_at,
-                observed_date=observed_date,
-                source=f"ranking:{ranking_type.lower()}",
-                source_url=url,
-            )
+            collect_ranking(db, now, ranking_type)
         except Exception as exc:
+            if ranking_type == "TRENDING":
+                raise
             errors.append(f"ranking {ranking_type}: {exc}")
 
     discovery_url = f"{API}/v1/discovery-tab"
@@ -981,7 +1062,8 @@ def build_matched_growth_history(
         """
         SELECT MAX(observed_date)
         FROM plot_observations
-        WHERE source NOT LIKE 'wayback%' AND interaction_count IS NOT NULL
+        WHERE source NOT LIKE 'wayback%' AND source NOT LIKE 'external:%'
+          AND interaction_count IS NOT NULL
         """
     ).fetchone()
     latest_date = latest_row[0] if latest_row else None
@@ -993,6 +1075,7 @@ def build_matched_growth_history(
         """
         SELECT * FROM plot_observations
         WHERE observed_date=? AND source NOT LIKE 'wayback%'
+          AND source NOT LIKE 'external:%'
           AND interaction_count IS NOT NULL
         ORDER BY observed_at
         """,
@@ -1212,6 +1295,7 @@ def build_core_history(db: sqlite3.Connection) -> list[dict[str, Any]]:
         SELECT *
         FROM plot_observations
         WHERE source NOT LIKE 'wayback%'
+          AND source NOT LIKE 'external:%'
           AND interaction_count IS NOT NULL
         ORDER BY observed_date, observed_at
         """
@@ -1442,6 +1526,8 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
         by_plot_days[row["plot_id"]][row["observed_date"]] = prefer_observation(
             plot_day, row
         )
+        if str(row["source"]).startswith("external:"):
+            continue
         current = by_date[row["observed_date"]].get(row["plot_id"])
         by_date[row["observed_date"]][row["plot_id"]] = prefer_observation(current, row)
     by_plot: dict[str, list[sqlite3.Row]] = {
@@ -1472,11 +1558,14 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             }
         )
 
-    latest_date = max((row["observed_date"] for row in latest.values()), default=None)
+    latest_date = max(
+        (row["observed_date"] for row in latest.values()
+         if not str(row["source"]).startswith("external:")), default=None,
+    )
     current_latest = {
         plot_id: row
         for plot_id, row in latest.items()
-        if row["observed_date"] == latest_date
+        if row["observed_date"] == latest_date and not str(row["source"]).startswith("external:")
     }
     plot_payloads: list[dict[str, Any]] = []
     deltas: dict[str, dict[int, int | None]] = {}
@@ -1510,10 +1599,13 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
                 "chatsWithRegen": row["interaction_with_regen"],
                 "comments": row["latest_comment_count"],
                 "commentsObservedAt": row["latest_comment_observed_at"],
+                "latestObservedDate": row["observed_date"],
+                "historicalOnly": str(row["source"]).startswith("external:"),
                 "changes": periods,
                 "series": [
                     {
                         "date": item["observed_date"],
+                        "observedAt": item["observed_at"],
                         "chats": item["interaction_count"],
                         "chatsWithRegen": item["interaction_with_regen"],
                         "comments": item["comment_count"],
@@ -1525,7 +1617,9 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             }
         )
     plot_payloads.sort(key=lambda row: row["chats"] or -1, reverse=True)
-    regeneration_cohorts = build_regeneration_cohorts(plot_payloads)
+    regeneration_cohorts = build_regeneration_cohorts(
+        [plot for plot in plot_payloads if not plot["historicalOnly"]]
+    )
 
     tag_stats: list[dict[str, Any]] = []
     tag_members: dict[str, list[str]] = defaultdict(list)
@@ -1550,7 +1644,10 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
         ]
         changes: dict[str, int | None] = {}
         for days in (7, 30, 60):
-            values = [deltas[plot_id][days] for plot_id in members if plot_id in deltas]
+            values = [
+                deltas[plot_id][days] for plot_id in members
+                if plot_id in deltas and not str(latest[plot_id]["source"]).startswith("external:")
+            ]
             usable = [value for value in values if value is not None]
             changes[str(days)] = sum(usable) if usable else None
         queue_row = db.execute(
@@ -1611,6 +1708,21 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             ),
             "waybackApiObservations": db.execute(
                 "SELECT COUNT(*) FROM plot_observations WHERE source='wayback-api'"
+            ).fetchone()[0],
+            "externalHistoryPlots": db.execute(
+                "SELECT COUNT(DISTINCT plot_id) FROM plot_observations WHERE source LIKE 'external:%'"
+            ).fetchone()[0],
+            "externalHistoryObservations": db.execute(
+                "SELECT COUNT(*) FROM plot_observations WHERE source LIKE 'external:%'"
+            ).fetchone()[0],
+            "trendingLatestDate": db.execute(
+                "SELECT MAX(observed_date) FROM plot_observations WHERE source='ranking:trending'"
+            ).fetchone()[0],
+            "trendingPlotsLatest": db.execute(
+                """SELECT COUNT(*) FROM plot_observations
+                   WHERE source='ranking:trending' AND observed_date=(
+                     SELECT MAX(observed_date) FROM plot_observations WHERE source='ranking:trending'
+                   )"""
             ).fetchone()[0],
         },
         "platformHistory": platform_history,
@@ -1676,6 +1788,13 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     parser.add_argument("--db", default=str(root / "data" / "zeta.sqlite3"))
     parser.add_argument("--out", default=str(root / "public" / "data"))
+    parser.add_argument(
+        "--external-history", default=str(root / "archive" / "otoscor-zeta-observations.json")
+    )
+    parser.add_argument(
+        "--trending-only", action="store_true",
+        help="기존 당일 관측을 유지하고 TRENDING과 과거 데이터만 추가함",
+    )
     parser.add_argument("--max-tag-pages", type=int, default=120)
     parser.add_argument("--max-comment-plots", type=int, default=250)
     parser.add_argument("--max-plot-refresh", type=int, default=3000)
@@ -1685,6 +1804,7 @@ def main() -> int:
 
     now = utc_now()
     db = connect(Path(args.db))
+    external_counts = import_external_history(db, Path(args.external_history))
     import_published_history(db, Path(args.out) / "dashboard.json")
     before = db.execute("SELECT COUNT(*) FROM plots").fetchone()[0]
     run_id = db.execute(
@@ -1694,18 +1814,19 @@ def main() -> int:
     db.commit()
     errors: list[str] = []
     try:
-        collect_seeds(db, now, errors, args.infinite_pages)
-        tag_pages = crawl_tag_queue(db, now, max_pages=args.max_tag_pages, errors=errors)
-        refresh_known_plots(
-            db,
-            now,
-            limit=args.max_plot_refresh,
-            workers=args.refresh_workers,
-            errors=errors,
-        )
-        comment_plots = collect_comments(
-            db, now, limit=args.max_comment_plots, errors=errors
-        )
+        tag_pages = comment_plots = 0
+        if args.trending_only:
+            collect_ranking(db, now, "TRENDING")
+        else:
+            collect_seeds(db, now, errors, args.infinite_pages)
+            tag_pages = crawl_tag_queue(db, now, max_pages=args.max_tag_pages, errors=errors)
+            refresh_known_plots(
+                db, now, limit=args.max_plot_refresh,
+                workers=args.refresh_workers, errors=errors,
+            )
+            comment_plots = collect_comments(
+                db, now, limit=args.max_comment_plots, errors=errors
+            )
         payload = build_dashboard(db, Path(args.out), errors)
         after = db.execute("SELECT COUNT(*) FROM plots").fetchone()[0]
         db.execute(
@@ -1725,6 +1846,7 @@ def main() -> int:
         )
         db.commit()
         print(json.dumps(payload["coverage"], ensure_ascii=False, indent=2))
+        print(json.dumps({"externalHistoryImported": external_counts}, ensure_ascii=False))
         if errors:
             print(json.dumps({"errors": errors[-10:]}, ensure_ascii=False, indent=2))
         return 0
