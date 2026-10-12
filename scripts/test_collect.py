@@ -534,7 +534,7 @@ class CollectorTests(unittest.TestCase):
             """
             INSERT INTO plot_observations (
               plot_id, observed_date, observed_at, source, interaction_count, source_url
-            ) VALUES ('orphan-core', '2026-09-20', '2026-09-20T00:00:00Z', 'tag:x', 1_200_000, 'u')
+            ) VALUES ('orphan-core', '2026-09-20', '2026-09-20T00:00:00Z', 'tag:x', 1200000, 'u')
             """
         )
         self.db.commit()
