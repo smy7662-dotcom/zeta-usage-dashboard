@@ -586,6 +586,7 @@ def import_external_history(db: sqlite3.Connection, archive_path: Path) -> dict[
             or not day
             or source not in EXTERNAL_HISTORY_SOURCES
             or chats is None
+            or chats < 0
             or db.execute("SELECT 1 FROM plots WHERE plot_id=?", (plot_id,)).fetchone() is None
         ):
             continue
@@ -762,22 +763,28 @@ def ingest_payload(
     return found, new
 
 
+def collect_ranking(db: sqlite3.Connection, now: datetime, ranking_type: str) -> int:
+    url = ranking_url(ranking_type)
+    payload = request_json(url)
+    found, _ = ingest_payload(
+        db, payload, observed_at=iso_z(utc_now()), observed_date=kst_day(now),
+        source=f"ranking:{ranking_type.lower()}", source_url=url,
+    )
+    if ranking_type == "TRENDING" and found == 0:
+        raise RuntimeError("TRENDING returned no valid plots; collection is incomplete")
+    db.commit()
+    return found
+
+
 def collect_seeds(db: sqlite3.Connection, now: datetime, errors: list[str], infinite_pages: int) -> None:
     # 날짜는 실행 기준일로 묶고, 시각은 응답을 받은 실제 시각을 저장함
     observed_date = kst_day(now)
     for ranking_type in RANKING_TYPES:
-        url = ranking_url(ranking_type)
         try:
-            payload = request_json(url)
-            ingest_payload(
-                db,
-                payload,
-                observed_at=iso_z(utc_now()),
-                observed_date=observed_date,
-                source=f"ranking:{ranking_type.lower()}",
-                source_url=url,
-            )
+            collect_ranking(db, now, ranking_type)
         except Exception as exc:
+            if ranking_type == "TRENDING":
+                raise
             errors.append(f"ranking {ranking_type}: {exc}")
 
     discovery_url = f"{API}/v1/discovery-tab"
@@ -1461,8 +1468,8 @@ def build_matched_growth_history(
         """
         SELECT MAX(observed_date)
         FROM plot_observations
-        WHERE source NOT LIKE 'wayback%' AND interaction_count IS NOT NULL
-          AND source NOT LIKE 'external:%'
+        WHERE source NOT LIKE 'wayback%' AND source NOT LIKE 'external:%'
+          AND interaction_count IS NOT NULL
         """
     ).fetchone()
     latest_date = latest_row[0] if latest_row else None
@@ -2090,11 +2097,14 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             }
         )
 
-    latest_date = max((row["observed_date"] for row in latest.values()), default=None)
+    latest_date = max(
+        (row["observed_date"] for row in latest.values()
+         if not str(row["source"]).startswith("external:")), default=None,
+    )
     current_latest = {
         plot_id: row
         for plot_id, row in latest.items()
-        if row["observed_date"] == latest_date
+        if row["observed_date"] == latest_date and not str(row["source"]).startswith("external:")
     }
     plot_payloads: list[dict[str, Any]] = []
     deltas: dict[str, dict[int, int | None]] = {}
@@ -2135,6 +2145,7 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
                 "series": [
                     {
                         "date": item["observed_date"],
+                        "observedAt": item["observed_at"],
                         "chats": item["interaction_count"],
                         "chatsWithRegen": item["interaction_with_regen"],
                         "comments": item["comment_count"],
@@ -2146,7 +2157,9 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             }
         )
     plot_payloads.sort(key=lambda row: row["chats"] or -1, reverse=True)
-    regeneration_cohorts = build_regeneration_cohorts(plot_payloads)
+    regeneration_cohorts = build_regeneration_cohorts(
+        [plot for plot in plot_payloads if not plot["historicalOnly"]]
+    )
 
     tag_stats: list[dict[str, Any]] = []
     tag_members: dict[str, list[str]] = defaultdict(list)
@@ -2171,7 +2184,10 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
         ]
         changes: dict[str, int | None] = {}
         for days in (7, 30, 60):
-            values = [deltas[plot_id][days] for plot_id in members if plot_id in deltas]
+            values = [
+                deltas[plot_id][days] for plot_id in members
+                if plot_id in deltas and not str(latest[plot_id]["source"]).startswith("external:")
+            ]
             usable = [value for value in values if value is not None]
             changes[str(days)] = sum(usable) if usable else None
         queue_row = db.execute(
@@ -2241,6 +2257,15 @@ def build_dashboard(db: sqlite3.Connection, out_dir: Path, errors: list[str]) ->
             ).fetchone()[0],
             "externalHistoryObservations": db.execute(
                 "SELECT COUNT(*) FROM plot_observations WHERE source LIKE 'external:%'"
+            ).fetchone()[0],
+            "trendingLatestDate": db.execute(
+                "SELECT MAX(observed_date) FROM plot_observations WHERE source='ranking:trending'"
+            ).fetchone()[0],
+            "trendingPlotsLatest": db.execute(
+                """SELECT COUNT(*) FROM plot_observations
+                   WHERE source='ranking:trending' AND observed_date=(
+                     SELECT MAX(observed_date) FROM plot_observations WHERE source='ranking:trending'
+                   )"""
             ).fetchone()[0],
         },
         "platformHistory": platform_history,
@@ -2327,6 +2352,8 @@ def plan_collection(db: sqlite3.Connection, now: datetime, mode: str) -> tuple[b
         return False, "build-only"
     if mode == "collect":
         return True, "forced"
+    if mode == "trending-only":
+        return True, "trending-only"
     today = kst_day(now)
     for row in db.execute(
         "SELECT started_at FROM runs WHERE success=1 ORDER BY run_id DESC LIMIT 20"
@@ -2368,6 +2395,10 @@ def main() -> int:
     parser.add_argument("--seed-snapshot")
     parser.add_argument("--archive")
     parser.add_argument("--external-history")
+    parser.add_argument(
+        "--trending-only", action="store_true",
+        help="기존 당일 관측을 유지하고 TRENDING만 추가함(그날 정기 수집이 끝난 뒤에만 쓸 것)",
+    )
     parser.add_argument("--max-tag-pages", type=int, default=120)
     parser.add_argument("--max-comment-plots", type=int, default=250)
     parser.add_argument("--max-plot-refresh", type=int, default=3000)
@@ -2375,7 +2406,7 @@ def main() -> int:
     parser.add_argument("--infinite-pages", type=int, default=8)
     parser.add_argument(
         "--plan",
-        choices=("auto", "collect", "build-only"),
+        choices=("auto", "collect", "build-only", "trending-only"),
         help="수집 여부만 판단해 GitHub Actions 출력 형식으로 찍고 끝냄",
     )
     parser.add_argument(
@@ -2435,23 +2466,28 @@ def main() -> int:
     db.commit()
     errors: list[str] = []
     try:
-        # 고정 패널을 실행 직후 가장 먼저 읽어 날마다 같은 시각에 가깝게 관측함
-        ensure_measurement_panel(db, now)
-        panel_ids = select_panel_targets(db, args.max_plot_refresh)
-        panel_result = refresh_plot_ids(
-            db, now, panel_ids, workers=args.refresh_workers, errors=errors
-        )
-        collect_seeds(db, now, errors, args.infinite_pages)
-        tag_pages = crawl_tag_queue(db, now, max_pages=args.max_tag_pages, errors=errors)
-        followup_ids = select_followup_targets(
-            db, now, limit=args.max_plot_refresh - len(panel_ids)
-        )
-        followup_result = refresh_plot_ids(
-            db, now, followup_ids, workers=args.refresh_workers, errors=errors
-        )
-        comment_plots = collect_comments(
-            db, now, limit=args.max_comment_plots, errors=errors
-        )
+        tag_pages = comment_plots = 0
+        panel_result = followup_result = None
+        if args.trending_only:
+            collect_ranking(db, now, "TRENDING")
+        else:
+            # 고정 패널을 실행 직후 가장 먼저 읽어 날마다 같은 시각에 가깝게 관측함
+            ensure_measurement_panel(db, now)
+            panel_ids = select_panel_targets(db, args.max_plot_refresh)
+            panel_result = refresh_plot_ids(
+                db, now, panel_ids, workers=args.refresh_workers, errors=errors
+            )
+            collect_seeds(db, now, errors, args.infinite_pages)
+            tag_pages = crawl_tag_queue(db, now, max_pages=args.max_tag_pages, errors=errors)
+            followup_ids = select_followup_targets(
+                db, now, limit=args.max_plot_refresh - len(panel_ids)
+            )
+            followup_result = refresh_plot_ids(
+                db, now, followup_ids, workers=args.refresh_workers, errors=errors
+            )
+            comment_plots = collect_comments(
+                db, now, limit=args.max_comment_plots, errors=errors
+            )
         payload = build_dashboard(db, Path(args.out), errors)
         after = db.execute("SELECT COUNT(*) FROM plots").fetchone()[0]
         db.execute(

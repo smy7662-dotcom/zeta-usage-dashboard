@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "build-only = 수집 없이 화면만 다시 배포 · auto = 오늘(KST) 수집이 없을 때만 수집 · collect = 오늘 이미 수집했어도 다시 수집(그날 관측 시각이 늦춰짐)"
+        description: "build-only = 수집 없이 화면만 다시 배포 · auto = 오늘(KST) 수집이 없을 때만 수집 · collect = 오늘 이미 수집했어도 다시 수집(그날 관측 시각이 늦춰짐) · trending-only = 그날 정기 수집 뒤 TRENDING만 추가"
         type: choice
         options:
           - build-only
           - auto
           - collect
+          - trending-only
         default: build-only
   schedule:
     # 매일 00:10 KST (전날 15:10 UTC). GitHub 예약은 수 시간 늦게 시작할 수 있음
@@ -67,7 +68,14 @@ jobs:
 
       - name: Collect public Zeta metrics
         if: steps.plan.outputs.collect == 'true'
-        run: python scripts/collect.py --market ${{ matrix.market }} ${{ matrix.args }}
+        env:
+          RUN_MODE: ${{ github.event_name == 'schedule' && 'auto' || inputs.mode }}
+        run: |
+          if [ "$RUN_MODE" = "trending-only" ]; then
+            python scripts/collect.py --market ${{ matrix.market }} --trending-only
+          else
+            python scripts/collect.py --market ${{ matrix.market }} ${{ matrix.args }}
+          fi
 
       - name: Rebuild dashboard without collecting
         if: steps.plan.outputs.collect != 'true'
@@ -76,7 +84,7 @@ jobs:
         run: python scripts/collect.py --market ${{ matrix.market }} --build-only
 
       - name: Backfill a small Wayback batch
-        if: steps.plan.outputs.collect == 'true' && matrix.market == 'KOREAN'
+        if: steps.plan.outputs.collect == 'true' && matrix.market == 'KOREAN' && inputs.mode != 'trending-only'
         continue-on-error: true
         run: python scripts/backfill_wayback.py --limit 1 --delay 0.25
 
