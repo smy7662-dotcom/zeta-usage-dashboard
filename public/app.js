@@ -1,4 +1,11 @@
+const marketSources = {
+  KOREAN: { label: "한국", hash: "", url: "public/data/dashboard.json" },
+  JAPANESE: { label: "일본", hash: "#ja", url: "public/data/ja/dashboard.json" },
+};
+
 const state = {
+  market: "KOREAN",
+  bound: false,
   data: null,
   days: "all",
   customStart: null,
@@ -13,6 +20,10 @@ const state = {
   regenChartPoints: [],
   regenVisible: new Set([10, 30, 50, 100]),
   coreChartPoints: [],
+  population: "core",
+  inventory: [],
+  tagMembers: new Map(),
+  donutSlices: { plots: [], chats: [] },
 };
 
 const metricLabels = {
@@ -70,12 +81,34 @@ function compact(value) {
   const abs = Math.abs(value);
   const sign = value < 0 ? "−" : "";
   if (abs >= 100000000) return `${sign}${(abs / 100000000).toFixed(abs >= 1000000000 ? 1 : 2).replace(/\.0+$/, "")}억`;
+  if (abs >= 10000000) return `${sign}${number.format(Math.round(abs / 10000))}만`;
   if (abs >= 10000) return `${sign}${(abs / 10000).toFixed(abs >= 1000000 ? 1 : 2).replace(/\.0+$/, "")}만`;
   return number.format(value);
 }
 
 function exact(value) {
   return value == null ? "—" : number.format(Math.round(value));
+}
+
+function signedCompact(value) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return value > 0 ? `+${compact(value)}` : value < 0 ? compact(value) : "0";
+}
+
+function formatHours(hours) {
+  if (hours == null || !Number.isFinite(hours)) return "—";
+  const whole = Math.floor(hours);
+  const minutes = Math.round((hours - whole) * 60);
+  return minutes === 60 ? `${whole + 1}시간` : `${whole}시간 ${minutes}분`;
+}
+
+function tagLabel(tag) {
+  const text = String(tag ?? "");
+  return /^[a-z]{2}$/.test(text) ? text.toUpperCase() : text;
+}
+
+function activityValue(point) {
+  return point.newChatsPer24h ?? point.totalNewChats;
 }
 
 function escapeHtml(value) {
@@ -144,9 +177,18 @@ function activityData() {
 
 function renderActivitySummary() {
   const { history, latest, panel } = activityData();
-  const validDays = history.filter((point) =>
+  // 방향 판정은 연속 유효일로만 셈. 간격이 24±허용 시간 밖이거나 비교율 95% 미만이면 끊김
+  const validDays = latest?.validStreakDays ?? history.filter((point) =>
     point.totalNewChats != null && point.comparisonCoveragePct >= 95
   ).length;
+  const tolerance = state.data.activityPolicy?.timingToleranceHours ?? 2;
+  const clocks = history
+    .filter((point) => point.observedClockKst)
+    .slice(-5)
+    .map((point) => `${point.date.slice(5).replace("-", ".")} ${point.observedClockKst}`);
+  $("activity-timing").textContent = clocks.length
+    ? `실제 관측 시각(KST, 예약 00:10) ${clocks.join(" · ")} · 24±${tolerance}시간 밖 간격은 7일 평균·가속 계산에서 제외`
+    : "관측 시각 기록 없음";
   if (!latest) {
     $("activity-seven-day").textContent = "기준선 대기";
     $("activity-acceleration").textContent = "판정 대기";
@@ -163,14 +205,14 @@ function renderActivitySummary() {
     ? "기준선 대기"
     : compact(latest.sevenDayAverageNewChats);
   $("activity-seven-day-note").textContent = latest.sevenDayAverageNewChats == null
-    ? `유효 관측 ${Math.min(validDays, 7)}/7일`
-    : `정확히 ${exact(latest.sevenDayAverageNewChats)}회/일`;
+    ? `연속 유효 ${Math.min(validDays, 7)}/7일`
+    : `24시간 환산 ${exact(latest.sevenDayAverageNewChats)}회/일`;
 
   $("activity-acceleration").textContent = latest.accelerationPct == null
     ? "판정 대기"
     : `${latest.accelerationPct > 0 ? "+" : ""}${latest.accelerationPct.toFixed(1)}%`;
   $("activity-acceleration-note").textContent = latest.accelerationPct == null
-    ? `유효 관측 ${Math.min(validDays, 14)}/14일`
+    ? `연속 유효 ${Math.min(validDays, 14)}/14일`
     : `${activityDirectionLabels[latest.direction] || "잠정 변화율"} · 직전 7일 대비`;
 
   $("activity-per-plot").textContent = latest.averageCumulativeChatsPerPlot == null
@@ -190,12 +232,15 @@ function renderActivitySummary() {
     : `활성 ${number.format(latest.activePlots)}개 · 상위 10 기여 ${latest.top10ContributionPct == null ? "—" : `${latest.top10ContributionPct.toFixed(1)}%`}`;
 
   $("activity-summary").textContent = latest.accelerationPct == null
-    ? `관측 ${Math.min(validDays, 14)}/14일`
+    ? `연속 유효 ${Math.min(validDays, 14)}/14일`
     : activityDirectionLabels[latest.direction] || "잠정 변화율";
   const correctionNote = latest.negativeCorrections
     ? ` · 원값 정정 ${number.format(latest.negativeCorrections)}개 제외`
     : "";
-  $("activity-coverage").textContent = `고정 패널 당일 ${number.format(latest.observedPanelPlots)}/${number.format(latest.panelSize)}개 · 일일 비교 ${number.format(latest.matchedPlots)}개 (${latest.comparisonCoveragePct.toFixed(1)}%)${correctionNote}`;
+  const missingNote = panel.missingPanelPlots
+    ? ` · 사라짐 ${number.format(panel.missingPanelPlots)}개`
+    : "";
+  $("activity-coverage").textContent = `고정 패널 당일 ${number.format(latest.observedPanelPlots)}/${number.format(latest.panelSize)}개 · 일일 비교 ${number.format(latest.matchedPlots)}개 (${latest.comparisonCoveragePct.toFixed(1)}%)${correctionNote}${missingNote}`;
 }
 
 function drawActivityChart() {
@@ -221,10 +266,10 @@ function drawActivityChart() {
   const plotW = Math.max(1, width - pad.left - pad.right);
   const plotH = Math.max(1, height - pad.top - pad.bottom);
   const values = points.flatMap((point) => [
-    point.totalNewChats,
+    point.timingValid === false ? point.totalNewChats : activityValue(point),
     point.sevenDayAverageNewChats,
   ]).filter((value) => value != null);
-  const maxRaw = Math.max(...values, 1);
+  const maxRaw = Math.max(...values, 1) * 1.12;
   const step = niceStep(maxRaw, 5);
   const maxValue = Math.ceil(maxRaw / step) * step;
   const firstTime = parseDay(points[0].date).getTime();
@@ -253,15 +298,38 @@ function drawActivityChart() {
     let px = x(point.date);
     if (index === 0) px = Math.max(pad.left + barWidth / 2, px);
     if (index === points.length - 1) px = Math.min(width - pad.right - barWidth / 2, px);
-    const top = y(point.totalNewChats);
-    ctx.fillStyle = point.comparisonCoveragePct < 95
-      ? "rgba(232,117,83,.30)"
+    const excluded = point.validForTrend === false
+      || (point.validForTrend == null && point.comparisonCoveragePct < 95);
+    // 간격이 크게 어긋난 날은 선형 환산이 하루 중 시간대 차이를 반영하지 못하므로 원값 그대로 흐리게 둠
+    const offSchedule = excluded && point.timingValid === false;
+    const value = offSchedule ? point.totalNewChats : activityValue(point);
+    const top = y(value);
+    ctx.fillStyle = excluded
+      ? "rgba(232,117,83,.16)"
       : "rgba(232,117,83,.64)";
     ctx.fillRect(px - barWidth / 2, top, barWidth, pad.top + plotH - top);
+    if (excluded) {
+      ctx.save();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = "rgba(191,76,63,.72)";
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(px - barWidth / 2 + .6, top + .6, barWidth - 1.2, pad.top + plotH - top - 1.2);
+      ctx.restore();
+      const label = offSchedule && point.intervalHours != null
+        ? `${point.intervalHours.toFixed(1)}시간치 원값 · 제외`
+        : "계산 제외";
+      const labelWidth = ctx.measureText(label).width;
+      const labelX = Math.min(width - pad.right - labelWidth / 2, Math.max(pad.left + labelWidth / 2 + 2, px));
+      ctx.fillStyle = "#9a5a4c";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(label, labelX, top - 5);
+    }
     return {
       ...point,
       x: px,
       barTop: top,
+      excluded,
       lineY: point.sevenDayAverageNewChats == null ? null : y(point.sevenDayAverageNewChats),
     };
   });
@@ -484,7 +552,6 @@ function renderCoreSummary() {
     return;
   }
 
-  const entrants = (latest.crossedCoreCount || 0) + (latest.discoveredCoreCount || 0);
   $("core-count").textContent = `${number.format(latest.corePlotCount)}개`;
   $("core-count").title = `${number.format(latest.corePlotCount)}개`;
   $("core-count-note").textContent = `${compact(policy.coreThreshold)}회 이상 · 최신 확보값`;
@@ -493,12 +560,39 @@ function renderCoreSummary() {
   $("core-chats-note").textContent = `정확히 ${exact(latest.coreTotalChats)}회`;
   $("watch-count").textContent = `${number.format(latest.watchPlotCount)}개`;
   $("watch-count-note").textContent = `${compact(policy.watchThreshold)}~${compact(policy.coreThreshold)}회 미만`;
-  $("core-entrants").textContent = `${number.format(entrants)}개`;
-  $("core-entrants-note").textContent = `실제 돌파 ${number.format(latest.crossedCoreCount || 0)} · 늦게 발견 ${number.format(latest.discoveredCoreCount || 0)}`;
+  // 늦게 발견한 플롯은 발견 범위가 넓어진 것이므로 오늘 돌파 수와 합치지 않음
+  $("core-entrants").textContent = `${number.format(latest.crossedCoreCount || 0)}개`;
+  $("core-entrants-note").textContent = `늦게 발견 ${number.format(latest.discoveredCoreCount || 0)}개는 따로 · 성장 아님`;
+  renderCoreDecomposition(latest);
   $("core-summary").textContent = `${latest.date} 최신 확보값`;
   $("core-coverage").textContent = latest.coreCoveragePct == null
     ? "당일 갱신 범위 없음"
     : `당일 핵심 재조회 ${number.format(latest.refreshedCorePlots)}/${number.format(latest.corePlotCount)}개 · ${latest.coreCoveragePct.toFixed(1)}%`;
+}
+
+function renderCoreDecomposition(latest) {
+  const box = $("core-decomposition");
+  if (latest.previousCoreTotalChats == null || latest.existingCoreGrowth == null) {
+    box.textContent = "전날 대비 분해는 다음 수집부터 표시";
+    return;
+  }
+  const change = latest.coreTotalChats - latest.previousCoreTotalChats;
+  const parts = [
+    ["기존 핵심 증가", latest.existingCoreGrowth, "grow"],
+    ["실제 돌파", latest.crossedCoreChats, "cross"],
+    ["늦게 발견", latest.discoveredCoreChats, "found"],
+  ];
+  if (latest.returnedCoreChats) parts.push(["복귀", latest.returnedCoreChats, "grow"]);
+  if (latest.exitedCoreChats) parts.push(["이탈·사라짐", -latest.exitedCoreChats, "exit"]);
+  const discoveredShare = change > 0 && latest.discoveredCoreChats
+    ? ` (${Math.round((latest.discoveredCoreChats / change) * 100)}%)`
+    : "";
+  const stale = latest.staleCorePlots
+    ? `<span class="stale">값이 2일 이상 지난 핵심 ${number.format(latest.staleCorePlots)}개</span>`
+    : "";
+  box.innerHTML = `<strong title="${signed.format(change)}회">전날 대비 합산 ${signedCompact(change)}</strong> = ${parts
+    .map(([label, value, kind]) => `<span class="part ${kind}" title="${signed.format(value)}회">${label} ${signedCompact(value)}${kind === "found" ? discoveredShare : ""}</span>`)
+    .join(" + ")}${stale}`;
 }
 
 function drawCoreChart() {
@@ -576,10 +670,18 @@ function drawCoreChart() {
   const visualPoints = points.map((point, index) => {
     const px = barX(point, index);
     const top = yCount(point.corePlotCount);
-    ctx.fillStyle = point.coreCoveragePct != null && point.coreCoveragePct < 95
-      ? "rgba(56,111,229,.42)"
-      : "rgba(56,111,229,.75)";
-    ctx.fillRect(px - barWidth / 2, top, barWidth, pad.top + plotH - top);
+    // 아래부터 전날부터 핵심 → 실제 돌파 → 늦게 발견. 세그먼트 사이 2px 여백
+    const crossed = point.crossedCoreCount || 0;
+    const discovered = point.discoveredCoreCount || 0;
+    const kept = Math.max(0, point.corePlotCount - crossed - discovered);
+    let base = pad.top + plotH;
+    [[kept, "rgba(56,111,229,.75)"], [crossed, "#1d8b67"], [discovered, "#b9c2bd"]].forEach(([count, color]) => {
+      if (!count) return;
+      const heightPx = (count / countMax) * plotH;
+      ctx.fillStyle = color;
+      ctx.fillRect(px - barWidth / 2, base - heightPx, barWidth, Math.max(1, heightPx - (base < pad.top + plotH ? 2 : 0)));
+      base -= heightPx;
+    });
     return {
       ...point,
       x: px,
@@ -642,7 +744,7 @@ function renderKpis() {
   $("kpi-active").textContent = values.length ? `${number.format(active)}개` : "—";
   $("kpi-active-note").textContent = values.length ? `비교군의 ${((active / values.length) * 100).toFixed(1)}%` : "대화량이 증가한 플롯";
   $("kpi-plots").textContent = number.format(coverage.knownPlots);
-  $("kpi-plots-note").textContent = `오늘 값 ${number.format(coverage.plotsWithCurrentValues)}개`;
+  $("kpi-plots-note").textContent = `전수 아님 · 오늘 값 ${number.format(coverage.plotsWithCurrentValues)}개${coverage.missingPlots ? ` · 사라짐 ${number.format(coverage.missingPlots)}개` : ""}`;
 }
 
 function renderTable() {
@@ -661,7 +763,7 @@ function renderTable() {
     </tr>`).join("") : `<tr><td colspan="4">비교 가능한 두 관측일이 아직 없음.</td></tr>`;
 
   const tags = state.data.tags.map((tag) => {
-    const comparable = (tag.memberIds || [])
+    const comparable = (state.tagMembers.get(tag.tag) || [])
       .map((id) => plotMap.get(id))
       .filter((plot) => plot?.delta != null);
     const delta = comparable.length
@@ -674,7 +776,7 @@ function renderTable() {
   $("tag-table").innerHTML = tags.length ? tags.map((tag, index) => `
     <tr>
       <td class="rank">${index + 1}</td>
-      <td class="name-cell"><strong>#${escapeHtml(tag.tag)}</strong><small>${tag.complete ? "검색 순회 완료" : "확장 수집 중"}</small></td>
+      <td class="name-cell"><strong>#${escapeHtml(tagLabel(tag.tag))}</strong><small>${tag.complete ? "검색 끝까지 조회" : tag.reportedPlots != null ? `태그 전체 ${number.format(tag.reportedPlots)}개 중 일부 확보` : "태그 검색 전"}</small></td>
       <td class="${tag.delta >= 0 ? "positive" : "negative"}" title="${signed.format(tag.delta)}회">${compact(tag.delta)}</td>
       <td title="현재 발견 ${number.format(tag.observedPlots)}개">${number.format(tag.comparablePlots)}</td>
     </tr>`).join("") : `<tr><td colspan="4">태그 비교 기준선을 수집 중임.</td></tr>`;
@@ -691,10 +793,13 @@ function showPlot(plotId) {
   $("plot-detail").hidden = false;
   state.detailPlotId = plotId;
   $("detail-name").textContent = plot.name;
-  $("detail-meta").textContent = `${plot.creator || "제작자 미확인"} · 관측 ${plot.series.length}회`;
+  const historicalNote = plot.historicalOnly
+    ? ` · ${plot.latestObservedDate || "과거"} 외부 공개 스냅샷 · 현재 재조회 대기`
+    : "";
+  $("detail-meta").textContent = `${plot.creator || "제작자 미확인"} · 관측 ${plot.series.length}회${historicalNote}`;
   $("detail-link").href = `https://zeta-ai.io/ko/plots/${encodeURIComponent(plot.id)}/profile`;
   $("detail-stats").innerHTML = [
-    ["현재 대화", exact(plot.chats)],
+    [plot.historicalOnly ? `${plot.latestObservedDate || "과거"} 대화` : "현재 대화", exact(plot.chats)],
     ["재생성 포함", exact(plot.chatsWithRegen)],
     ["댓글", exact(plot.comments)],
     ["선택 기간 증가", comparison ? signed.format(comparison.delta) : "—"],
@@ -707,6 +812,7 @@ function sourceLabel(source) {
   if (source === "wayback-home") return "Wayback 홈 캡처";
   if (source === "wayback-api") return "Wayback API JSON";
   if (source === "wayback") return "Wayback 프로필";
+  if (source === "external:otoscor-zeta") return "GitHub 공개 스냅샷";
   if (source?.startsWith("ranking:")) return "현재 랭킹 API";
   if (source === "detail" || source === "live") return "현재 상세 API";
   return source || "공개 원값";
@@ -755,12 +861,20 @@ function renderMeta() {
   $("coverage-line").textContent = `플롯 ${number.format(c.knownPlots)} · 태그 ${number.format(c.knownTags)}`;
   $("method-plots").textContent = number.format(c.knownPlots);
   $("method-tags").textContent = number.format(c.knownTags);
+  $("method-tags-note").textContent = c.crawledTags == null
+    ? "발견 태그"
+    : `발견 태그 · 1쪽 이상 조회 ${number.format(c.crawledTags)} · 끝까지 ${number.format(c.completedTags)}`;
   $("method-comments").textContent = number.format(c.plotsWithComments);
   $("method-history").textContent = number.format(c.plotsWithHistory || 0);
-  if (state.data.homepageHistory?.length) {
+  if (state.market !== "KOREAN") {
+    $("method-note").textContent = `${marketSources[state.market].label} 시장은 제타 공개 API에 시장 헤더를 붙여 한국과 별도로 수집함. 수집 시작 이후 값만 있고 Wayback 과거 복원은 없음. 한국과 합산하지 않으며, 확보 플롯은 전수가 아님.`;
+  } else if (state.data.homepageHistory?.length) {
     const history = state.data.homepageHistory;
     const coverages = history.map((point) => point.observedPlots).filter(Number.isFinite);
-    $("method-note").textContent = `Wayback 한국 홈은 색인 71개 중 ${number.format(history.length)}개 날짜(${history[0].date}~${history[history.length - 1].date})를 복원했고, 보관 API JSON에서는 플롯-날짜 원값 ${number.format(c.waybackApiObservations || 0)}개를 추가 복원함. 현재 ${number.format(c.plotsWithHistory || 0)}개 플롯이 2개 이상의 대화수 관측점을 가짐. 홈 캡처는 플랫폼 전수가 아니라 공개 표본이며 빈 날짜는 생성하지 않음.`;
+    const external = c.externalHistoryObservations
+      ? ` Otoscor GitHub의 API 기반 TRENDING 상위 30 공개 스냅샷에서 ${number.format(c.externalHistoryPlots || 0)}개 플롯·${number.format(c.externalHistoryObservations)}개 과거 원값을 보강했으며 플랫폼 합계에는 섞지 않음.`
+      : "";
+    $("method-note").textContent = `Wayback 한국 홈은 색인 71개 중 ${number.format(history.length)}개 날짜(${history[0].date}~${history[history.length - 1].date})를 복원했고, 보관 API JSON에서는 플롯-날짜 원값 ${number.format(c.waybackApiObservations || 0)}개를 추가 복원함.${external} 현재 ${number.format(c.plotsWithHistory || 0)}개 플롯이 2개 이상의 대화수 관측점을 가짐. 홈·외부 랭킹은 플랫폼 전수가 아니며 빈 날짜는 생성하지 않음.`;
   }
   if (state.data.errors?.length) {
     $("error-box").hidden = false;
@@ -836,8 +950,11 @@ function drawChart() {
       ? `${state.metric === "homepageMatchedIndex" ? "지수" : "원값"} ${number.format(points.length)}점 · ${points[0].date}→${points[points.length - 1].date}`
       : "관측점 없음";
     const latestPoint = points[points.length - 1];
+    const link = state.data.matchedGrowthLink;
     $("history-coverage").textContent = state.metric === "homepageMatchedIndex" && latestPoint?.isCurrent
-      ? `최신 연결 동일 플롯 ${number.format(latestPoint.matchedPlots)}개 · 홈 원값 ${number.format(history.length)}일`
+      ? `최신 연결 동일 플롯 ${number.format(latestPoint.matchedPlots)}${latestPoint.comparisonPlots ? `/${number.format(latestPoint.comparisonPlots)}` : ""}개 · 홈 원값 ${number.format(history.length)}일`
+      : state.metric === "homepageMatchedIndex" && link && !link.linked && link.latestDate
+      ? `현재 연결 대기 · 과거 표본 재조회 ${link.bestSharePct == null ? "—" : `${link.bestSharePct}%`}(필요 ${link.requiredSharePct}%)`
       : coverages.length
       ? `원값 ${number.format(history.length)}일 · 캡처당 ${number.format(Math.min(...coverages))}~${number.format(Math.max(...coverages))}개 플롯`
       : "캡처당 플롯 —";
@@ -943,6 +1060,260 @@ function drawChart() {
   });
 }
 
+// ---- 태그 구성: 관계 표기 원그래프 · 태그 보유 비율 · 조합 조회 · Top 30 ----
+
+// 색은 항목에 고정함(순위가 바뀌어도 같은 항목은 같은 색)
+const relationClasses = [
+  { key: "both", label: "BL+이성 함께", color: "#2a78d6" },
+  { key: "hetero", label: "이성(HL·NL)만", color: "#eb6834" },
+  { key: "bl", label: "BL만", color: "#1baf7a" },
+  { key: "gl", label: "GL 포함", color: "#eda100" },
+  { key: "none", label: "관계 표기 없음", color: "#c4cbc6" },
+];
+const relationTags = ["bl", "hl", "gl", "nl"];
+const populationLabels = { core: "100만+ 핵심", today: "오늘 관측", all: "확보 전체" };
+
+function relationKey(tags) {
+  const set = new Set(tags || []);
+  if (set.has("gl")) return "gl";
+  const bl = set.has("bl");
+  const hetero = set.has("hl") || set.has("nl");
+  if (bl && hetero) return "both";
+  if (bl) return "bl";
+  if (hetero) return "hetero";
+  return "none";
+}
+
+function buildInventory() {
+  // 플롯별 마지막 현재 API 원값만 사용함. Wayback·외부 과거값·사라진 플롯은 오늘 재고가 아님
+  state.inventory = state.data.plots.map((plot) => {
+    const points = (plot.series || []).filter((point) =>
+      point.chats != null
+      && !String(point.source || "").startsWith("wayback")
+      && !String(point.source || "").startsWith("external:")
+    );
+    const current = points[points.length - 1];
+    return current && !plot.missingSince
+      ? { plot, chats: current.chats, date: current.date }
+      : null;
+  }).filter(Boolean);
+  state.tagMembers = new Map();
+  state.data.plots.forEach((plot) => (plot.tags || []).forEach((tag) => {
+    if (!state.tagMembers.has(tag)) state.tagMembers.set(tag, []);
+    state.tagMembers.get(tag).push(plot.id);
+  }));
+}
+
+function populationRows() {
+  const threshold = state.data.corePolicy?.coreThreshold ?? 1000000;
+  if (state.population === "core") return state.inventory.filter((row) => row.chats >= threshold);
+  if (state.population === "today") return state.inventory.filter((row) => row.date === state.data.latestDate);
+  return state.inventory;
+}
+
+function shareCell(share, maxShare) {
+  if (share == null || !Number.isFinite(share)) return "—";
+  const width = maxShare > 0 ? Math.max(2, (share / maxShare) * 100) : 0;
+  return `<div class="share-cell"><span class="share-bar" style="width:${width.toFixed(1)}%"></span><em>${(share * 100).toFixed(1)}%</em></div>`;
+}
+
+function renderComposition() {
+  const rows = populationRows();
+  const totalChats = rows.reduce((sum, row) => sum + row.chats, 0);
+  $("composition-meta").textContent = `${populationLabels[state.population]} ${number.format(rows.length)}개 · 누적 대화 ${compact(totalChats)}회 · 기준 ${state.data.latestDate} · 플롯별 마지막 공개 원값`;
+
+  const classes = relationClasses.map((item) => ({ ...item, plots: 0, chats: 0, combos: new Map() }));
+  const byKey = new Map(classes.map((item) => [item.key, item]));
+  rows.forEach(({ plot, chats }) => {
+    const item = byKey.get(relationKey(plot.tags));
+    item.plots += 1;
+    item.chats += chats;
+    const combo = relationTags
+      .filter((tag) => (plot.tags || []).includes(tag))
+      .map((tag) => tag.toUpperCase())
+      .join("+") || "표기 없음";
+    item.combos.set(combo, (item.combos.get(combo) || 0) + 1);
+  });
+  state.compositionClasses = { classes, plotsTotal: rows.length, chatsTotal: totalChats };
+  drawDonut("plots");
+  drawDonut("chats");
+
+  const both = byKey.get("both");
+  const hlPossible = rows.filter(({ plot }) => (plot.tags || []).includes("hl가능")).length;
+  $("composition-note").textContent = `관계 표기는 BL·HL·GL·NL 태그 조합으로 한 플롯을 한 칸에만 넣어 합계 100%임. BL과 이성 표기를 함께 단 플롯이 ${number.format(both.plots)}개(${rows.length ? ((both.plots / rows.length) * 100).toFixed(1) : "—"}%)라 두 태그는 서로 배타적인 장르가 아님 — 유저 성별을 고를 수 있다는 표시로 보임${hlPossible ? `('hl가능' 태그를 단 플롯 ${number.format(hlPossible)}개)` : ""}. NL은 이성 커플링 표기로 보고 HL과 묶음(추정).`;
+
+  const tagCounts = new Map();
+  let untagged = 0;
+  rows.forEach(({ plot, chats }) => {
+    if (!(plot.tags || []).length) untagged += 1;
+    (plot.tags || []).forEach((tag) => {
+      const entry = tagCounts.get(tag) || { plots: 0, chats: 0 };
+      entry.plots += 1;
+      entry.chats += chats;
+      tagCounts.set(tag, entry);
+    });
+  });
+  const ranked = [...tagCounts.entries()]
+    .sort((a, b) => b[1].plots - a[1].plots || b[1].chats - a[1].chats)
+    .slice(0, 15);
+  const maxPlotShare = ranked.length ? ranked[0][1].plots / Math.max(rows.length, 1) : 0;
+  const maxChatShare = Math.max(0, ...ranked.map(([, value]) => value.chats / Math.max(totalChats, 1)));
+  $("tag-share-table").innerHTML = ranked.length ? ranked.map(([tag, value], index) => `
+    <tr>
+      <td class="rank">${index + 1}</td>
+      <td class="tag-name"><button type="button" class="tag-link" data-tag="${escapeHtml(tag)}">#${escapeHtml(tagLabel(tag))}</button></td>
+      <td title="${number.format(value.plots)}개">${shareCell(value.plots / Math.max(rows.length, 1), maxPlotShare)}</td>
+      <td title="${exact(value.chats)}회">${shareCell(value.chats / Math.max(totalChats, 1), maxChatShare)}</td>
+    </tr>`).join("") : `<tr><td colspan="4">선택한 모집단에 플롯이 없음.</td></tr>`;
+  const tagsPerPlot = median(rows.map((row) => (row.plot.tags || []).length));
+  $("tag-share-note").textContent = `태그를 가진 플롯 비율과 그 플롯들의 누적 대화 비율 · 한 플롯에 태그가 중앙값 ${tagsPerPlot ?? "—"}개라 합계는 100%를 넘음 · 태그 없는 플롯 ${number.format(untagged)}개`;
+
+  $("combo-chips").innerHTML = ranked.slice(0, 10).map(([tag]) =>
+    `<button type="button" class="tag-link" data-tag="${escapeHtml(tag)}">#${escapeHtml(tagLabel(tag))}</button>`
+  ).join("");
+  renderCombo();
+  renderTop30(rows);
+}
+
+function drawDonut(kind) {
+  const data = state.compositionClasses;
+  if (!data) return;
+  const canvas = $(`donut-${kind}`);
+  const wrap = $(`donut-${kind}-wrap`);
+  const field = kind === "plots" ? "plots" : "chats";
+  const total = kind === "plots" ? data.plotsTotal : data.chatsTotal;
+  const size = Math.max(150, Math.min(wrap.clientWidth || 200, 210));
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = Math.round(size * dpr);
+  canvas.height = Math.round(size * dpr);
+  canvas.style.width = `${size}px`;
+  canvas.style.height = `${size}px`;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, size, size);
+  const cx = size / 2;
+  const cy = size / 2;
+  const outer = size / 2 - 3;
+  const inner = outer - 30;
+  let angle = -Math.PI / 2;
+  const slices = [];
+  data.classes.forEach((item) => {
+    const value = item[field];
+    if (!value || !total) return;
+    const sweep = (value / total) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, outer, angle, angle + sweep);
+    ctx.arc(cx, cy, inner, angle + sweep, angle, true);
+    ctx.closePath();
+    ctx.fillStyle = item.color;
+    ctx.fill();
+    ctx.strokeStyle = "#fdfdf9";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    slices.push({ ...item, start: angle, end: angle + sweep, value, share: value / total });
+    angle += sweep;
+  });
+  state.donutSlices[kind] = { slices, cx, cy, outer, inner };
+  $(`donut-${kind}-center`).innerHTML = kind === "plots"
+    ? `<strong>${number.format(total)}</strong><span>플롯</span>`
+    : `<strong>${compact(total)}</strong><span>누적 대화</span>`;
+  $(`donut-${kind}-legend`).innerHTML = data.classes.map((item) => {
+    const value = item[field];
+    const share = total ? (value / total) * 100 : 0;
+    const detail = kind === "plots" ? `${number.format(value)}개` : `${compact(value)}회`;
+    return `<li><i style="background:${item.color}"></i><span>${escapeHtml(item.label)}</span><strong>${share.toFixed(1)}%</strong><small title="${kind === "plots" ? `${number.format(value)}개` : `${exact(value)}회`}">${detail}</small></li>`;
+  }).join("");
+}
+
+function donutHover(kind, event) {
+  const donut = state.donutSlices[kind];
+  const tip = $(`donut-${kind}-tooltip`);
+  if (!donut?.slices?.length) return;
+  const rect = event.target.getBoundingClientRect();
+  const dx = event.clientX - rect.left - donut.cx;
+  const dy = event.clientY - rect.top - donut.cy;
+  const radius = Math.hypot(dx, dy);
+  if (radius < donut.inner - 4 || radius > donut.outer + 4) {
+    tip.hidden = true;
+    return;
+  }
+  let angle = Math.atan2(dy, dx);
+  if (angle < -Math.PI / 2) angle += Math.PI * 2;
+  const slice = donut.slices.find((item) => angle >= item.start && angle < item.end);
+  if (!slice) {
+    tip.hidden = true;
+    return;
+  }
+  const combos = [...slice.combos.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([combo, count]) => `${escapeHtml(combo)} ${number.format(count)}`)
+    .join(" · ");
+  const value = kind === "plots" ? `${number.format(slice.value)}개` : `${exact(slice.value)}회`;
+  tip.innerHTML = `${escapeHtml(slice.label)}<strong>${(slice.share * 100).toFixed(1)}% · ${value}</strong><span>구성: ${combos || "—"}</span>`;
+  tip.hidden = false;
+  tip.style.left = `${Math.min(rect.width - 200, Math.max(0, event.clientX - rect.left + 10))}px`;
+  tip.style.top = `${Math.max(0, event.clientY - rect.top - 70)}px`;
+}
+
+function parseComboQuery(text) {
+  return [...new Set(
+    String(text || "")
+      .split(/[\s,，#]+/)
+      .map((value) => value.trim().toLocaleLowerCase("ko-KR"))
+      .filter(Boolean)
+  )];
+}
+
+function renderCombo() {
+  const tags = parseComboQuery($("combo-input").value);
+  const rows = populationRows();
+  if (!tags.length) {
+    $("combo-result").textContent = `태그를 입력하면 ${populationLabels[state.population]} ${number.format(rows.length)}개 중 모두 가진 플롯을 셈`;
+    $("combo-list").innerHTML = "";
+    return;
+  }
+  const totalChats = rows.reduce((sum, row) => sum + row.chats, 0);
+  const matched = rows
+    .filter(({ plot }) => tags.every((tag) => (plot.tags || []).includes(tag)))
+    .sort((a, b) => b.chats - a.chats);
+  const chats = matched.reduce((sum, row) => sum + row.chats, 0);
+  const label = tags.map((tag) => `#${escapeHtml(tagLabel(tag))}`).join(" + ");
+  $("combo-result").innerHTML = matched.length
+    ? `${label} 모두 가진 플롯 <strong>${number.format(matched.length)}개</strong> (${((matched.length / Math.max(rows.length, 1)) * 100).toFixed(1)}%) · 누적 대화 <strong title="${exact(chats)}회">${compact(chats)}</strong> (${((chats / Math.max(totalChats, 1)) * 100).toFixed(1)}%)`
+    : `${label} 모두 가진 플롯이 ${escapeHtml(populationLabels[state.population])}에 없음`;
+  $("combo-list").innerHTML = matched.slice(0, 10).map(({ plot, chats: value }) => `
+    <li data-plot-id="${escapeHtml(plot.id)}"><span>${escapeHtml(plot.name)}</span><em title="${exact(value)}회">${compact(value)}</em></li>`).join("");
+}
+
+function renderTop30(rows) {
+  const top = [...rows].sort((a, b) => b.chats - a.chats).slice(0, 30);
+  const has = (row, tag) => (row.plot.tags || []).includes(tag);
+  const bl = top.filter((row) => has(row, "bl")).length;
+  const hl = top.filter((row) => has(row, "hl")).length;
+  const both = top.filter((row) => has(row, "bl") && has(row, "hl")).length;
+  const none = top.filter((row) => relationKey(row.plot.tags) === "none").length;
+  $("top30-summary").innerHTML = top.length
+    ? `Top ${top.length} 중 <strong>#BL 표기 ${number.format(bl)}개</strong> · #HL ${number.format(hl)}개 · 둘 다 ${number.format(both)}개 · 관계 표기 없음 ${number.format(none)}개`
+    : "플롯 없음";
+  $("top30-table").innerHTML = top.map((row, index) => `
+    <tr data-plot-id="${escapeHtml(row.plot.id)}">
+      <td class="rank">${index + 1}</td>
+      <td class="name-cell"><strong>${escapeHtml(row.plot.name)}</strong><small>${escapeHtml(row.plot.creator || "제작자 미확인")} · ${escapeHtml(row.date)} 값</small></td>
+      <td title="${exact(row.chats)}회">${compact(row.chats)}</td>
+      <td class="tag-list">${(row.plot.tags || []).map((tag) =>
+        `<span class="${relationTags.includes(tag) ? `rel rel-${tag}` : ""}">#${escapeHtml(tagLabel(tag))}</span>`
+      ).join("") || "<span>태그 없음</span>"}</td>
+    </tr>`).join("");
+}
+
+function addComboTag(tag) {
+  const current = parseComboQuery($("combo-input").value);
+  if (!current.includes(tag)) current.push(tag);
+  $("combo-input").value = current.join(" ");
+  renderCombo();
+  $("combo-input").focus();
+}
+
 function renderAll() {
   renderActivitySummary();
   drawActivityChart();
@@ -1002,11 +1373,35 @@ function bind() {
   $("detail-chart-button").addEventListener("click", () => {
     if (state.detailPlotId) showPlotChart(state.detailPlotId);
   });
+  document.querySelectorAll("#population-buttons button").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("#population-buttons button").forEach((item) => item.classList.remove("active"));
+      button.classList.add("active");
+      state.population = button.dataset.population;
+      renderComposition();
+    });
+  });
+  $("combo-input").addEventListener("input", renderCombo);
+  document.querySelector(".composition-panel").addEventListener("click", (event) => {
+    const tagButton = event.target.closest(".tag-link");
+    if (tagButton) {
+      addComboTag(tagButton.dataset.tag);
+      return;
+    }
+    const plotRow = event.target.closest("[data-plot-id]");
+    if (plotRow) showPlot(plotRow.dataset.plotId);
+  });
+  ["plots", "chats"].forEach((kind) => {
+    $(`donut-${kind}`).addEventListener("mousemove", (event) => donutHover(kind, event));
+    $(`donut-${kind}`).addEventListener("mouseleave", () => { $(`donut-${kind}-tooltip`).hidden = true; });
+  });
   window.addEventListener("resize", () => requestAnimationFrame(() => {
     drawActivityChart();
     drawRegenerationChart();
     drawCoreChart();
     drawChart();
+    drawDonut("plots");
+    drawDonut("chats");
   }));
   $("activity-chart").addEventListener("mousemove", (event) => {
     if (!state.activityChartPoints.length) return;
@@ -1022,10 +1417,23 @@ function bind() {
     }
     const point = nearest.point;
     const tip = $("activity-tooltip");
-    tip.innerHTML = `${escapeHtml(point.date)}<strong>신규 대화 ${exact(point.totalNewChats)}회</strong><span>일일 비교 ${number.format(point.matchedPlots)}/${number.format(point.panelSize)}개 (${point.comparisonCoveragePct.toFixed(1)}%)</span><span>플롯당 중앙 ${exact(point.medianNewChatsPerPlot)}회 · 활성 ${point.activeSharePct == null ? "—" : `${point.activeSharePct.toFixed(1)}%`}</span><span>7일 평균 ${point.sevenDayAverageNewChats == null ? "기준선 수집 중" : `${exact(point.sevenDayAverageNewChats)}회`}</span>`;
+    const offSchedule = point.excluded && point.timingValid === false;
+    const headline = offSchedule
+      ? `원값 증분 ${exact(point.totalNewChats)}회`
+      : `24시간 환산 ${exact(activityValue(point))}회`;
+    const timingLine = point.intervalHours == null
+      ? "관측 간격 기록 없음"
+      : offSchedule
+        ? `${formatHours(point.intervalHours)}치 · 24시간 환산 ${exact(point.newChatsPer24h)}회는 시간대 차이로 신뢰 낮음`
+        : `원값 증분 ${exact(point.totalNewChats)}회 · 간격 ${formatHours(point.intervalHours)}`;
+    const exclusionLine = point.excluded
+      ? `<span class="tip-warn">${point.timingValid === false ? "간격이 24±2시간 밖이라" : "비교율 95% 미만이라"} 7일 평균·가속 계산에서 제외</span>`
+      : "";
+    const clock = point.observedClockKst ? ` · ${escapeHtml(point.observedClockKst)} KST 관측` : "";
+    tip.innerHTML = `${escapeHtml(point.date)}${clock}<strong>${headline}</strong><span>${timingLine}</span>${exclusionLine}<span>일일 비교 ${number.format(point.matchedPlots)}/${number.format(point.panelSize)}개 (${point.comparisonCoveragePct.toFixed(1)}%)</span><span>플롯당 중앙 ${exact(point.medianNewChatsPerPlot)}회 · 활성 ${point.activeSharePct == null ? "—" : `${point.activeSharePct.toFixed(1)}%`}</span><span>7일 평균 ${point.sevenDayAverageNewChats == null ? "기준선 수집 중" : `${exact(point.sevenDayAverageNewChats)}회`}</span>`;
     tip.hidden = false;
-    tip.style.left = `${Math.min(rect.width - 230, Math.max(6, point.x + 12))}px`;
-    tip.style.top = `${Math.max(4, point.barTop - 96)}px`;
+    tip.style.left = `${Math.min(rect.width - 280, Math.max(6, point.x + 12))}px`;
+    tip.style.top = `${Math.max(4, point.barTop - 150)}px`;
   });
   $("activity-chart").addEventListener("mouseleave", () => { $("activity-tooltip").hidden = true; });
   $("regen-chart").addEventListener("mousemove", (event) => {
@@ -1062,10 +1470,14 @@ function bind() {
     }
     const point = nearest.point;
     const tip = $("core-tooltip");
-    tip.innerHTML = `${escapeHtml(point.date)}<strong>${number.format(point.corePlotCount)}개 · ${exact(point.coreTotalChats)}회</strong><span>당일 재조회 ${number.format(point.refreshedCorePlots)}개 (${point.coreCoveragePct == null ? "—" : `${point.coreCoveragePct.toFixed(1)}%`})</span><span>실제 돌파 ${number.format(point.crossedCoreCount || 0)} · 늦게 발견 ${number.format(point.discoveredCoreCount || 0)}</span>`;
+    const change = point.previousCoreTotalChats == null ? null : point.coreTotalChats - point.previousCoreTotalChats;
+    const breakdown = change == null || point.existingCoreGrowth == null
+      ? ""
+      : `<span>전날 대비 ${signed.format(change)}회</span><span>기존 핵심 증가 ${signed.format(point.existingCoreGrowth)} · 실제 돌파 ${signed.format(point.crossedCoreChats || 0)}</span><span>늦게 발견 ${signed.format(point.discoveredCoreChats || 0)}${point.exitedCoreChats ? ` · 이탈 −${number.format(point.exitedCoreChats)}` : ""}</span>`;
+    tip.innerHTML = `${escapeHtml(point.date)}<strong>${number.format(point.corePlotCount)}개 · ${exact(point.coreTotalChats)}회</strong><span>당일 재조회 ${number.format(point.refreshedCorePlots)}개 (${point.coreCoveragePct == null ? "—" : `${point.coreCoveragePct.toFixed(1)}%`})</span><span>실제 돌파 ${number.format(point.crossedCoreCount || 0)}개 · 늦게 발견 ${number.format(point.discoveredCoreCount || 0)}개</span>${breakdown}`;
     tip.hidden = false;
-    tip.style.left = `${Math.min(rect.width - 230, Math.max(6, point.x + 12))}px`;
-    tip.style.top = `${Math.max(4, point.lineY - 82)}px`;
+    tip.style.left = `${Math.min(rect.width - 280, Math.max(6, point.x + 12))}px`;
+    tip.style.top = `${Math.max(4, point.lineY - 150)}px`;
   });
   $("core-chart").addEventListener("mouseleave", () => { $("core-tooltip").hidden = true; });
   $("history-chart").addEventListener("mousemove", (event) => {
@@ -1090,34 +1502,97 @@ function bind() {
   $("history-chart").addEventListener("mouseleave", () => { $("chart-tooltip").hidden = true; });
 }
 
+function markSectionsWithMarket() {
+  const label = marketSources[state.market].label;
+  document.querySelectorAll(".panel-head .section-kicker").forEach((node) => {
+    if (!node.dataset.base) node.dataset.base = node.textContent;
+    node.textContent = `${node.dataset.base} · ${label}`;
+  });
+  document.querySelectorAll("#market-buttons button").forEach((button) => {
+    const active = button.dataset.market === state.market;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+async function fetchMarket(market) {
+  const source = marketSources[market];
+  const response = await fetch(`${source.url}?t=${Date.now()}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+function bindMarket() {
+  document.querySelectorAll("#market-buttons button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const market = button.dataset.market;
+      if (market === state.market) return;
+      $("market-note").textContent = "불러오는 중";
+      try {
+        const data = await fetchMarket(market);
+        showMarket(market, data);
+        history.replaceState(null, "", marketSources[market].hash || location.pathname);
+        $("market-note").textContent = "";
+      } catch (error) {
+        $("market-note").textContent = `${marketSources[market].label} 데이터가 아직 없음 — 다음 수집부터 쌓임`;
+      }
+    });
+  });
+}
+
+function showMarket(market, data) {
+  state.market = market;
+  state.data = data;
+  state.metric = "homepageMatchedIndex";
+  $("metric-select").value = state.metric;
+  $("plot-detail").hidden = true;
+  $("error-box").hidden = true;
+  $("error-list").innerHTML = "";
+  buildInventory();
+  state.chartablePlots = state.data.plots
+    .filter((plot) => (plot.series || []).some((point) => point.chats != null))
+    .sort((a, b) => {
+      const aPoints = a.series.filter((point) => point.chats != null).length;
+      const bPoints = b.series.filter((point) => point.chats != null).length;
+      return bPoints - aPoints || (b.chats || 0) - (a.chats || 0);
+    });
+  if (state.chartablePlots.length) {
+    state.restoredPlotId = state.chartablePlots[0].id;
+    renderPlotOptions();
+  }
+  if (!state.data.homepageHistory?.length) {
+    state.metric = state.chartablePlots.length ? "restoredPlotChats" : "averageChatsPerPlot";
+    $("metric-select").value = state.metric;
+  }
+  $("plot-picker").hidden = state.metric !== "restoredPlotChats";
+  const end = state.data.latestDate;
+  const start = parseDay(end); start.setDate(start.getDate() - 30);
+  state.customStart = dayString(start); state.customEnd = end;
+  $("start-date").value = state.customStart; $("end-date").value = end;
+  markSectionsWithMarket();
+  if (!state.bound) {
+    bind();
+    bindMarket();
+    state.bound = true;
+  }
+  renderMeta(); renderAll(); renderComposition();
+}
+
 async function boot() {
+  const wanted = location.hash === "#ja" ? "JAPANESE" : "KOREAN";
   try {
-    const response = await fetch(`public/data/dashboard.json?t=${Date.now()}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    state.data = await response.json();
-    state.chartablePlots = state.data.plots
-      .filter((plot) => (plot.series || []).some((point) => point.chats != null))
-      .sort((a, b) => {
-        const aPoints = a.series.filter((point) => point.chats != null).length;
-        const bPoints = b.series.filter((point) => point.chats != null).length;
-        return bPoints - aPoints || (b.chats || 0) - (a.chats || 0);
-      });
-    if (state.chartablePlots.length) {
-      state.restoredPlotId = state.chartablePlots[0].id;
-      renderPlotOptions();
-    }
-    if (!state.data.homepageHistory?.length) {
-      state.metric = state.chartablePlots.length ? "restoredPlotChats" : "averageChatsPerPlot";
-      $("metric-select").value = state.metric;
-    }
-    $("plot-picker").hidden = state.metric !== "restoredPlotChats";
-    const end = state.data.latestDate;
-    const start = parseDay(end); start.setDate(start.getDate() - 30);
-    state.customStart = dayString(start); state.customEnd = end;
-    $("start-date").value = state.customStart; $("end-date").value = end;
-    renderMeta(); bind(); renderAll();
+    showMarket(wanted, await fetchMarket(wanted));
   } catch (error) {
-    document.body.innerHTML = `<main class="shell"><section class="panel"><h1>데이터를 불러오지 못함</h1><p>${escapeHtml(error.message)}</p></section></main>`;
+    if (wanted === "KOREAN") {
+      document.body.innerHTML = `<main class="shell"><section class="panel"><h1>데이터를 불러오지 못함</h1><p>${escapeHtml(error.message)}</p></section></main>`;
+      return;
+    }
+    try {
+      showMarket("KOREAN", await fetchMarket("KOREAN"));
+      $("market-note").textContent = "일본 데이터가 아직 없음 — 다음 수집부터 쌓임";
+    } catch (inner) {
+      document.body.innerHTML = `<main class="shell"><section class="panel"><h1>데이터를 불러오지 못함</h1><p>${escapeHtml(inner.message)}</p></section></main>`;
+    }
   }
 }
 

@@ -18,9 +18,14 @@
       <div>
         <p class="eyebrow">ZETA PUBLIC SIGNALS</p>
         <h1>제타 관심도 관측소</h1>
-        <p class="lede">공개 플롯의 정확한 누적값을 매일 같은 시각에 읽어, 관심이 커지는 방향과 그 원인을 태그·플롯까지 내려가 확인함.</p>
+        <p class="lede">공개 플롯의 정확한 누적값을 매일 읽어, 관심이 커지는 방향과 그 원인을 태그·플롯까지 내려가 확인함. 관측 시각이 날마다 달라 증분은 실제 간격으로 24시간 환산함.</p>
       </div>
       <div class="hero-meta">
+        <div class="segmented market-buttons" id="market-buttons" aria-label="시장 선택">
+          <button class="active" data-market="KOREAN" aria-pressed="true">한국</button>
+          <button data-market="JAPANESE" aria-pressed="false">일본</button>
+        </div>
+        <p class="market-note" id="market-note"></p>
         <div class="live-dot"><span></span> 공개 데이터</div>
         <p id="updated-at">데이터 불러오는 중</p>
         <p id="coverage-line"></p>
@@ -32,7 +37,7 @@
         <div>
           <p class="section-kicker">CHAT ACTIVITY PROXY</p>
           <h2 id="activity-title">제타 공개 채팅활동 대리지표</h2>
-          <p class="annotation">매일 같은 고정 플롯 패널의 신규 대화량으로 채팅 생성 속도를 비교함</p>
+          <p class="annotation">매일 같은 고정 플롯 패널의 신규 대화량을 실제 관측 간격으로 24시간 환산해 채팅 생성 속도를 비교함</p>
         </div>
         <div class="chart-summary" id="activity-summary">데이터 불러오는 중</div>
       </div>
@@ -62,11 +67,13 @@
 
       <div class="activity-chart-meta">
         <div class="activity-legend" aria-label="채팅활동 차트 범례">
-          <span><i class="activity-legend-bar" aria-hidden="true"></i>일일 신규 대화</span>
+          <span><i class="activity-legend-bar" aria-hidden="true"></i>24시간 환산 신규 대화</span>
+          <span><i class="activity-legend-bar excluded" aria-hidden="true"></i>간격 24±2시간 밖 · 계산 제외</span>
           <span><i class="activity-legend-line" aria-hidden="true"></i>7일 이동평균</span>
         </div>
         <p id="activity-coverage">고정 패널 커버리지 확인 중</p>
       </div>
+      <p class="activity-timing" id="activity-timing">관측 시각 확인 중</p>
       <div class="activity-chart-wrap" id="activity-chart-wrap">
         <canvas id="activity-chart" aria-label="고정 패널 일일 신규 대화량과 7일 이동평균"></canvas>
         <div class="tooltip" id="activity-tooltip" hidden></div>
@@ -114,7 +121,7 @@
         <div>
           <p class="section-kicker">CORE INVENTORY</p>
           <h2 id="core-title">누적 대화 100만+ 플롯</h2>
-          <p class="annotation">막대 = 기준 이상 플롯 수 · 선 = 해당 플롯들의 누적 대화량 합계</p>
+          <p class="annotation">막대 = 기준 이상 플롯 수(전날부터·실제 돌파·늦게 발견) · 선 = 해당 플롯들의 누적 대화량 합계</p>
         </div>
         <div class="chart-summary" id="core-summary">데이터 불러오는 중</div>
       </div>
@@ -136,25 +143,28 @@
           <small id="watch-count-note">다음 핵심 진입 후보</small>
         </article>
         <article>
-          <p>최근 핵심 진입</p>
+          <p>오늘 실제 돌파</p>
           <strong id="core-entrants">—</strong>
-          <small id="core-entrants-note">실제 돌파 · 늦게 발견 구분</small>
+          <small id="core-entrants-note">늦게 발견한 플롯은 따로 셈</small>
         </article>
       </div>
 
       <div class="core-chart-meta">
         <div class="core-legend" aria-label="차트 범례">
-          <span><i class="legend-bar" aria-hidden="true"></i>100만+ 플롯 수</span>
+          <span><i class="legend-bar" aria-hidden="true"></i>전날부터 핵심</span>
+          <span><i class="legend-bar crossed" aria-hidden="true"></i>실제 돌파</span>
+          <span><i class="legend-bar discovered" aria-hidden="true"></i>늦게 발견(성장 아님)</span>
           <span><i class="legend-line" aria-hidden="true"></i>합산 누적 대화량</span>
         </div>
         <p id="core-coverage">당일 갱신 범위 확인 중</p>
       </div>
+      <p class="core-decomposition" id="core-decomposition">전날 대비 변화 분해 확인 중</p>
       <div class="core-chart-wrap" id="core-chart-wrap">
         <canvas id="core-chart" aria-label="100만 이상 플롯 수와 합산 누적 대화량 시계열"></canvas>
         <div class="tooltip" id="core-tooltip" hidden></div>
         <div class="empty-state" id="core-empty" hidden>100만 이상 핵심 플롯 관측값이 아직 없음.</div>
       </div>
-      <p class="core-caveat">플롯별 마지막 공개 원값을 사용함. 오늘 처음 발견했지만 이미 100만 회 이상인 플롯은 실제 신규 돌파와 분리함.</p>
+      <p class="core-caveat">플롯별 마지막 공개 원값을 사용함. 오늘 처음 발견했지만 이미 100만 회 이상인 플롯은 발견 범위가 넓어진 것이지 오늘 생긴 대화가 아니므로 실제 돌파와 분리함. 삭제·비공개(404)로 확인된 플롯은 확인한 날부터 뺌.</p>
     </section>
 
     <section class="control-bar" aria-label="조회 조건">
@@ -214,7 +224,7 @@
       <article class="kpi-card accent-green">
         <p>현재 확보 플롯</p>
         <strong id="kpi-plots">—</strong>
-        <small id="kpi-plots-note">전수조사 진행 중</small>
+        <small id="kpi-plots-note">전수 아님 · 발견한 공개 플롯</small>
       </article>
     </section>
 
@@ -274,6 +284,81 @@
       </article>
     </section>
 
+    <section class="panel composition-panel" aria-labelledby="composition-title">
+      <div class="panel-head">
+        <div>
+          <p class="section-kicker">TAG MIX</p>
+          <h2 id="composition-title">태그 구성</h2>
+          <p class="annotation">오늘 기준 확보 플롯의 관계 표기·태그 비중 · 모집단을 바꿔 비교</p>
+        </div>
+        <div class="segmented population-buttons" id="population-buttons" aria-label="모집단 선택">
+          <button class="active" data-population="core">100만+ 핵심</button>
+          <button data-population="today">오늘 관측</button>
+          <button data-population="all">확보 전체</button>
+        </div>
+      </div>
+      <p class="composition-meta" id="composition-meta">데이터 불러오는 중</p>
+      <div class="donut-grid">
+        <figure class="donut-card">
+          <figcaption>플롯 수 비중</figcaption>
+          <div class="donut-body">
+            <div class="donut-wrap" id="donut-plots-wrap">
+              <canvas id="donut-plots" aria-label="관계 표기별 플롯 수 비중"></canvas>
+              <div class="donut-center" id="donut-plots-center"></div>
+              <div class="tooltip" id="donut-plots-tooltip" hidden></div>
+            </div>
+            <ul class="donut-legend" id="donut-plots-legend"></ul>
+          </div>
+        </figure>
+        <figure class="donut-card">
+          <figcaption>누적 대화량 비중</figcaption>
+          <div class="donut-body">
+            <div class="donut-wrap" id="donut-chats-wrap">
+              <canvas id="donut-chats" aria-label="관계 표기별 누적 대화량 비중"></canvas>
+              <div class="donut-center" id="donut-chats-center"></div>
+              <div class="tooltip" id="donut-chats-tooltip" hidden></div>
+            </div>
+            <ul class="donut-legend" id="donut-chats-legend"></ul>
+          </div>
+        </figure>
+      </div>
+      <p class="composition-note" id="composition-note">관계 표기는 BL·HL·GL·NL 태그 조합으로 한 플롯을 한 칸에만 넣어 합계 100%임.</p>
+      <div class="composition-grid">
+        <article class="composition-block">
+          <h3>태그 보유 비율 상위 15</h3>
+          <div class="table-scroll">
+            <table class="share-table">
+              <thead><tr><th>#</th><th>태그</th><th>플롯 비율</th><th>대화량 비율</th></tr></thead>
+              <tbody id="tag-share-table"></tbody>
+            </table>
+          </div>
+          <p class="block-note" id="tag-share-note">한 플롯에 태그가 여러 개라 비율 합은 100%를 넘음</p>
+        </article>
+        <article class="composition-block">
+          <h3>태그 조합 조회</h3>
+          <label class="combo-input">
+            <span>모두 포함할 태그</span>
+            <input type="search" id="combo-input" placeholder="예: bl 집착" aria-label="태그 조합 입력">
+          </label>
+          <div class="combo-chips" id="combo-chips"></div>
+          <div class="combo-result" id="combo-result">태그를 입력하면 선택한 모집단에서 모두 가진 플롯을 셈</div>
+          <ol class="combo-list" id="combo-list"></ol>
+        </article>
+      </div>
+      <div class="top30-block">
+        <div class="top30-head">
+          <h3>누적 대화 Top 30 플롯과 전체 태그</h3>
+          <p id="top30-summary">—</p>
+        </div>
+        <div class="table-scroll">
+          <table class="top30-table">
+            <thead><tr><th>#</th><th>플롯</th><th>누적 대화</th><th>태그 전체</th></tr></thead>
+            <tbody id="top30-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <section class="panel detail-panel" id="plot-detail" hidden>
       <div class="panel-head">
         <div>
@@ -297,7 +382,7 @@
       </div>
       <div class="method-grid">
         <div><strong id="method-plots">—</strong><span>발견 고유 플롯</span></div>
-        <div><strong id="method-tags">—</strong><span>발견 태그</span></div>
+        <div><strong id="method-tags">—</strong><span id="method-tags-note">발견 태그</span></div>
         <div><strong id="method-comments">—</strong><span>댓글 확보 플롯</span></div>
         <div><strong id="method-history">—</strong><span>대화 추이 플롯</span></div>
       </div>

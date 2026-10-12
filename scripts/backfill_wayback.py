@@ -290,12 +290,14 @@ def main() -> int:
             SELECT plot_id, name
             FROM plots
             ORDER BY (wayback_checked_at IS NULL) DESC,
+                     COALESCE(wayback_attempted_at, '') ASC,
                      COALESCE(last_interaction_count, 0) DESC
             LIMIT ?
             """,
             (args.limit,),
         ).fetchall()
     checked = saved = 0
+    failed_plots: set[str] = set()
     try:
         plot_names = {row["plot_id"]: row["name"] for row in rows}
         captures_by_plot: dict[str, dict[tuple[str, str], dict[str, str]]] = {
@@ -314,7 +316,8 @@ def main() -> int:
                         key = (capture["timestamp"], capture["original"])
                         captures_by_plot[plot_id][key] = capture
                 except Exception as exc:
-                    errors.append(f"{plot_id} {original}: {exc}")
+                    failed_plots.add(plot_id)
+                    errors.append(f"wayback {plot_id} {original}: {exc}")
 
         fetch_jobs: list[tuple[str, dict[str, str]]] = []
         for plot_id, captures in captures_by_plot.items():
@@ -347,7 +350,8 @@ def main() -> int:
                         best_by_plot_day[key] = result
                     time.sleep(args.delay)
                 except Exception as exc:
-                    errors.append(f"{plot_id} {capture['timestamp']}: {exc}")
+                    failed_plots.add(plot_id)
+                    errors.append(f"wayback {plot_id} {capture['timestamp']}: {exc}")
 
         saved_by_plot = {plot_id: 0 for plot_id in plot_names}
         for result in sorted(best_by_plot_day.values(), key=lambda item: item["timestamp"]):
@@ -356,6 +360,15 @@ def main() -> int:
             saved_by_plot[result["plot_id"]] += 1
         checked_at = iso_z(datetime.now(timezone.utc))
         for plot_id in plot_names:
+            # 실패한 플롯이 매일 같은 자리에서 큐를 막지 않게 시도 시각을 남김
+            db.execute(
+                "UPDATE plots SET wayback_attempted_at=? WHERE plot_id=?",
+                (checked_at, plot_id),
+            )
+            # 색인·원문 조회가 실패한 플롯은 다음 실행에서 다시 시도하도록 남겨 둠
+            if plot_id in failed_plots:
+                print(f"{plot_id}: lookup failed, retry next run")
+                continue
             db.execute(
                 "UPDATE plots SET wayback_checked_at=? WHERE plot_id=?",
                 (checked_at, plot_id),
@@ -366,7 +379,17 @@ def main() -> int:
                 f"{saved_by_plot[plot_id]} exact captures"
             )
         db.commit()
-        build_dashboard(db, Path(args.out), errors)
+        # 대시보드를 다시 만들 때 같은 날 수집기 오류를 지우지 않도록 합쳐서 남김
+        collector_errors: list[str] = []
+        last_run = db.execute(
+            "SELECT errors_json FROM runs WHERE finished_at IS NOT NULL ORDER BY run_id DESC LIMIT 1"
+        ).fetchone()
+        if last_run is not None:
+            try:
+                collector_errors = list(json.loads(last_run["errors_json"] or "[]"))
+            except (TypeError, ValueError):
+                collector_errors = []
+        build_dashboard(db, Path(args.out), collector_errors + errors)
         print(json.dumps({"checkedPlots": checked, "savedCaptures": saved, "errors": len(errors)}))
         return 0
     finally:

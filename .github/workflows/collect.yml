@@ -2,8 +2,17 @@ name: collect-and-publish
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "build-only = 수집 없이 화면만 다시 배포 · auto = 오늘(KST) 수집이 없을 때만 수집 · collect = 오늘 이미 수집했어도 다시 수집(그날 관측 시각이 늦춰짐)"
+        type: choice
+        options:
+          - build-only
+          - auto
+          - collect
+        default: build-only
   schedule:
-    # 매일 00:10 KST (전날 15:10 UTC)
+    # 매일 00:10 KST (전날 15:10 UTC). GitHub 예약은 수 시간 늦게 시작할 수 있음
     - cron: "10 15 * * *"
 
 permissions:
@@ -17,11 +26,24 @@ concurrency:
 
 jobs:
   collect:
+    # 시장마다 DB·캐시·출력을 따로 둬 한국 시계열과 일본 시계열이 섞이지 않게 함
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - market: KOREAN
+            db: data/zeta.sqlite3
+            out: public/data
+            cache: zeta-db
+            args: --max-tag-pages 120 --max-plot-refresh 3000 --max-comment-plots 250 --infinite-pages 8
+          - market: JAPANESE
+            db: data/zeta-ja.sqlite3
+            out: public/data/ja
+            cache: zetajp-db
+            # 일본 댓글 수 API는 대부분 403이라 끔. 상세 조회는 하루 1,000개로 시작함
+            args: --max-tag-pages 40 --max-plot-refresh 1000 --max-comment-plots 0 --infinite-pages 4
     steps:
       - uses: actions/checkout@v4
 
@@ -32,26 +54,153 @@ jobs:
       - name: Restore collector state
         uses: actions/cache/restore@v4
         with:
-          path: data/zeta.sqlite3
-          key: zeta-db-${{ github.run_id }}
+          path: ${{ matrix.db }}
+          key: ${{ matrix.cache }}-${{ github.run_id }}
           restore-keys: |
-            zeta-db-
+            ${{ matrix.cache }}-
+
+      - name: Decide whether to collect
+        id: plan
+        env:
+          RUN_MODE: ${{ github.event_name == 'schedule' && 'auto' || inputs.mode }}
+        run: python scripts/collect.py --market ${{ matrix.market }} --plan "$RUN_MODE" | tee -a "$GITHUB_OUTPUT"
 
       - name: Collect public Zeta metrics
-        run: python scripts/collect.py --max-tag-pages 120 --max-plot-refresh 3000 --max-comment-plots 250 --infinite-pages 8
+        if: steps.plan.outputs.collect == 'true'
+        run: python scripts/collect.py --market ${{ matrix.market }} ${{ matrix.args }}
+
+      - name: Rebuild dashboard without collecting
+        if: steps.plan.outputs.collect != 'true'
+        # 일본은 첫 수집 전이면 DB가 비어 있어 거부되는 게 정상임
+        continue-on-error: ${{ matrix.market != 'KOREAN' }}
+        run: python scripts/collect.py --market ${{ matrix.market }} --build-only
 
       - name: Backfill a small Wayback batch
+        if: steps.plan.outputs.collect == 'true' && matrix.market == 'KOREAN'
         continue-on-error: true
         run: python scripts/backfill_wayback.py --limit 1 --delay 0.25
 
       - name: Verify output
+        if: matrix.market == 'KOREAN'
         run: python -m unittest scripts/test_collect.py
 
       - name: Save collector state
+        if: steps.plan.outputs.collect == 'true'
         uses: actions/cache/save@v4
         with:
-          path: data/zeta.sqlite3
-          key: zeta-db-${{ github.run_id }}
+          path: ${{ matrix.db }}
+          key: ${{ matrix.cache }}-${{ github.run_id }}
+
+      - name: Hand site data to publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-data-${{ matrix.market }}
+          path: ${{ matrix.out }}/*.json
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Hand database to publish job
+        if: steps.plan.outputs.collect == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-transfer-${{ matrix.market }}
+          path: ${{ matrix.db }}
+          retention-days: 1
+
+      - name: Preserve collector database
+        # 캐시가 7일 미사용 등으로 지워져도 90일 안에는 관측 시각까지 온전히 복구할 수 있게 함
+        if: steps.plan.outputs.collect == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeta-db-${{ matrix.market }}-${{ github.run_number }}
+          path: ${{ matrix.db }}
+          retention-days: 90
+
+  publish:
+    # 한 시장 수집이 실패해도 나머지 시장 화면은 배포함
+    needs: collect
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Collect Korean site data
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: site-data-KOREAN
+          path: public/data
+
+      - name: Collect Japanese site data
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: site-data-JAPANESE
+          path: public/data/ja
+
+      - name: Refuse to publish stale Korean data
+        # 한국 작업이 실패하면 저장소에 체크인된 09-23 스냅샷이 그대로 남으므로 배포를 막음
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+          status = json.load(open("public/data/status.json", encoding="utf-8"))
+          updated = datetime.strptime(status["updatedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+          age = datetime.now(timezone.utc) - updated
+          print("korean data age", age)
+          raise SystemExit(0 if age < timedelta(hours=48) else 1)
+          PY
+
+      - name: Collect databases
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: db-transfer-*
+          path: dbs
+
+      - name: Archive raw data to data branch
+        # 캐시·90일 보관이 사라져도 원천별 관측행과 실제 관측 시각을 영구 보존함
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          dbs=(dbs/db-transfer-*/*.sqlite3)
+          if [ ${#dbs[@]} -eq 0 ]; then
+            echo "no collected databases"
+            exit 0
+          fi
+          remote="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads "$remote" data >/dev/null 2>&1; then
+            git clone --quiet --depth 1 --branch data --single-branch "$remote" datastore
+          else
+            git init --quiet -b data datastore
+            git -C datastore remote add origin "$remote"
+          fi
+          for market in KOREAN JAPANESE; do
+            for db in dbs/db-transfer-${market}/*.sqlite3; do
+              folder="datastore/$(echo "$market" | tr '[:upper:]' '[:lower:]')"
+              python scripts/export_data_branch.py --db "$db" --out "$folder"
+            done
+          done
+          cd datastore
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no data changes"
+            exit 0
+          fi
+          git commit --quiet -m "data: $(TZ=Asia/Seoul date +%F) collection"
+          git push --quiet origin HEAD:data
 
       - name: Assemble site
         run: |

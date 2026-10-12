@@ -8,6 +8,8 @@
 python scripts/collect.py
 python scripts/backfill_wayback.py --limit 20
 python -m unittest scripts/test_collect.py
+python scripts/export_wayback_archive.py --db data/zeta.sqlite3
+python scripts/import_otoscor_history.py --out archive/otoscor-zeta-observations.json
 .\run.ps1
 ```
 
@@ -20,6 +22,7 @@ python -m unittest scripts/test_collect.py
 - [태그 검색 API](https://api.zeta-ai.io/v2/plots/search?keyword=%23zeta&limit=50&order=LATEST)
 - [댓글 수 API](https://api.zeta-ai.io/v1/plots/7ca5d04c-e2e0-425a-9dfd-e4cf0cdf7878/comments/count)
 - Wayback 플롯 프로필 원문
+- [Otoscor/chatbotmonitoring](https://github.com/Otoscor/chatbotmonitoring)의 API 기반 TRENDING 과거 스냅샷(2026-02-02~05-23 KST)
 
 ## 데이터 정책
 
@@ -28,4 +31,9 @@ python -m unittest scripts/test_collect.py
 - 초기 전수조사 중에는 확보 범위를 화면에 표시함.
 - 플랫폼 총량은 고유 플롯 ID로 중복 제거함.
 - 좋아요는 안정적인 자동 수집이 확인될 때만 추가함.
+- Wayback 복원 원자료는 `archive/wayback-observations.json`에 원천별로 모두 보존함.
+- 매일 수집한 원자료는 `data` 브랜치에 날짜별로 커밋해 영구 보존함.
+- 일일 증분은 실제 관측 간격으로 24시간 환산하고, 24±2시간 밖은 추세 계산에서 제외함.
+- 외부 TRENDING 과거 스냅샷은 동적 상위 30 표본이므로 개별 플롯 시계열에만 사용하고 플랫폼 합계·현재 재고에는 섞지 않음.
+- 앞으로의 TRENDING 상위 플롯은 외부 저장소가 아니라 Zeta 공개 API를 직접 매일 수집함.
 
